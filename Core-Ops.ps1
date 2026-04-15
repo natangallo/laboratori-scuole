@@ -17,7 +17,7 @@ $MinProfileAgeDays = 1  # Profiles older than this are candidates for cleanup
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 $BitlockerEnabled = $true
-$BitlockerFolderId = "0AEi7_W43pwZ9Uk9PVA"  # Specify the Google Drive Folder ID here
+$BitlockerFolderId = "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A"  # Specify the Google Drive Folder ID here
 #endregion
 
 #region Helper Functions
