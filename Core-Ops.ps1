@@ -64,7 +64,8 @@ function Send-Telemetry {
         # 4. Sending via Invoke-RestMethod
         
         return $true
-    } catch {
+    }
+    catch {
         Write-Log "Failed to send telemetry: $_" "ERROR"
         return $false
     }
@@ -75,14 +76,15 @@ function Get-OlderProfiles {
     try {
         $cutoffDate = (Get-Date).AddDays(-$MinAgeDays)
         $profiles = Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue | 
-                    Where-Object {
-                        # Skip default and system profiles
-                        $_.Name -notin @("Default", "Default User", "All Users", "Public", "Administrator") -and
-                        # Check if profile is older than cutoff
-                        ($_.CreationTime -lt $cutoffDate)
-                    }
+        Where-Object {
+            # Skip default and system profiles
+            $_.Name -notin @("Default", "Default User", "All Users", "Public", "Administrator", "ladmin") -and
+            # Check if profile is older than cutoff
+            ($_.CreationTime -lt $cutoffDate)
+        }
         return $profiles
-    } catch {
+    }
+    catch {
         Write-Log "Error getting older profiles: $_" "ERROR"
         return @()
     }
@@ -106,7 +108,8 @@ function Cleanup-Profile {
         # Remove-Item -Path $Profile.FullName -Recurse -Force
         
         return $true
-    } catch {
+    }
+    catch {
         Write-Log "Failed to cleanup profile $($Profile.Name): $_" "ERROR"
         return $false
     }
@@ -129,7 +132,8 @@ try {
     
     if ($oldProfiles.Count -eq 0) {
         Write-Log "No profiles found older than $MinProfileAgeDays days"
-    } else {
+    }
+    else {
         Write-Log "Found $($oldProfiles.Count) profiles older than $MinProfileAgeDays days:"
         foreach ($profile in $oldProfiles) {
             Write-Log "  - $($profile.Name) (created: $($profile.CreationTime))"
@@ -149,12 +153,12 @@ try {
         # Send telemetry about cleanup operation
         if ($TelemetryEnabled) {
             $telemetryData = @{
-                deviceId = $env:COMPUTERNAME
-                timestamp = (Get-Date).ToString("o")
-                eventType = "profile_cleanup"
-                profilesFound = $oldProfiles.Count
+                deviceId        = $env:COMPUTERNAME
+                timestamp       = (Get-Date).ToString("o")
+                eventType       = "profile_cleanup"
+                profilesFound   = $oldProfiles.Count
                 profilesCleaned = $cleanedCount
-                minAgeDays = $MinProfileAgeDays
+                minAgeDays      = $MinProfileAgeDays
             }
             Send-Telemetry -Data $telemetryData
         }
@@ -162,15 +166,16 @@ try {
     
     Write-Log "=== Core-Ops.ps1 Completed Successfully ==="
     exit 0
-} catch {
+}
+catch {
     Write-Log "Unhandled error in Core-Ops.ps1: $_" "ERROR"
     
     # Send error telemetry
     if ($TelemetryEnabled) {
         $errorTelemetry = @{
-            deviceId = $env:COMPUTERNAME
-            timestamp = (Get-Date).ToString("o")
-            eventType = "coreops_error"
+            deviceId     = $env:COMPUTERNAME
+            timestamp    = (Get-Date).ToString("o")
+            eventType    = "coreops_error"
             errorMessage = $_.Exception.Message
         }
         Send-Telemetry -Data $errorTelemetry | Out-Null
