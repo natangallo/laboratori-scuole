@@ -204,7 +204,7 @@ function Send-DriveUploadMultipart {
         )
         $body = $bodyParts -join "`r`n"
 
-        $uri = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+        $uri = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true"
         $headers = @{
             "Authorization" = "Bearer $AccessToken"
         }
