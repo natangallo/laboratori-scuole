@@ -283,10 +283,8 @@ try {
     }
 
     # Heartbeat Telemetry: Inviata sempre se il token è valido
-    Write-Log "[DEBUG] Preparing Heartbeat Telemetry (Token Present: $(if($gcpToken){"YES"}else{"NO"}))"
     if ($TelemetryEnabled -and $gcpToken) {
         try {
-            Write-Log "[DEBUG] Sending request to Firestore for project: $gcpProjectId"
             $telemetryData = @{
                 deviceId        = $env:COMPUTERNAME
                 timestamp       = (Get-Date).ToString("o")
@@ -294,8 +292,7 @@ try {
                 profilesFound   = [int]$oldProfiles.Count
                 profilesCleaned = [int]$cleanedCount
             }
-            $res = Send-FirestoreTelemetry -Data $telemetryData -AccessToken $gcpToken -ProjectId $gcpProjectId
-            Write-Log "[DEBUG] Telemetry function returned: $res"
+            Send-FirestoreTelemetry -Data $telemetryData -AccessToken $gcpToken -ProjectId $gcpProjectId | Out-Null
         } catch {
             Write-Log "Failed to send heartbeat telemetry: $_" "WARN"
         }
