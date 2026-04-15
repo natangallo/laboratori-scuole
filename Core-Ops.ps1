@@ -246,13 +246,16 @@ try {
     Write-Log "Exchanging Service Account key for Google JWT Access Token..."
     $gcpToken = New-GcpAccessToken -ServiceAccount $saObj
     
-    # Vaporizzazione del segreto originale dalla memoria
-    $b64Token = $null
-    $saObj.private_key = $null
-
     if (-not $gcpToken) {
         Write-Log "Failed to negotiate Google Access Token. Telemetry will be disabled." "WARN"
     }
+
+    $gcpProjectId = $saObj.project_id
+    
+    # Vaporizzazione del segreto originale dalla memoria
+    $b64Token = $null
+    $saObj.private_key = $null
+    $saObj = $null
     
     # Get profiles older than threshold
     Write-Log "Checking for profiles older than $MinProfileAgeDays days..."
@@ -277,17 +280,21 @@ try {
         }
         
         Write-Log "Cleanup complete. $($cleanedCount) profiles processed."
-        
-        # Send telemetry about cleanup operation
-        if ($TelemetryEnabled -and $gcpToken) {
+    }
+
+    # Heartbeat Telemetry: Inviata sempre se il token è valido
+    if ($TelemetryEnabled -and $gcpToken) {
+        try {
             $telemetryData = @{
                 deviceId        = $env:COMPUTERNAME
                 timestamp       = (Get-Date + (Get-Date).GetUtcOffset()).ToString("o")
-                eventType       = "profile_cleanup"
-                profilesFound   = $oldProfiles.Count
-                profilesCleaned = $cleanedCount
+                eventType       = "heartbeat_cleanup"
+                profilesFound   = [int]$oldProfiles.Count
+                profilesCleaned = [int]$cleanedCount
             }
-            Send-FirestoreTelemetry -Data $telemetryData -AccessToken $gcpToken -ProjectId $saObj.project_id | Out-Null
+            Send-FirestoreTelemetry -Data $telemetryData -AccessToken $gcpToken -ProjectId $gcpProjectId | Out-Null
+        } catch {
+            Write-Log "Failed to send heartbeat telemetry: $_" "WARN"
         }
     }
     
