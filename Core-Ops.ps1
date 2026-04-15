@@ -16,6 +16,8 @@ $ProfilePath = "C:\Users"
 $MinProfileAgeDays = 1  # Profiles older than this are candidates for cleanup
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
+$BitlockerEnabled = $true
+$BitlockerFolderId = "0AEi7_W43pwZ9Uk9PVA"  # Specify the Google Drive Folder ID here
 #endregion
 
 #region Helper Functions
@@ -50,7 +52,8 @@ function Get-RegistryValueSecure {
             }
         }
         return $null
-    } catch {
+    }
+    catch {
         Write-Log "Failed to read registry value ${Path}\${Name}: $_" "ERROR"
         return $null
     }
@@ -62,7 +65,8 @@ function ConvertFrom-Base64Json {
         $bytes = [System.Convert]::FromBase64String($Base64String)
         $json = [System.Text.Encoding]::UTF8.GetString($bytes)
         return ConvertFrom-Json $json
-    } catch {
+    }
+    catch {
         Write-Log "Failed to convert MDMAuth to JSON: $_" "ERROR"
         return $null
     }
@@ -72,7 +76,7 @@ function ConvertTo-Base64Url {
     param([string]$InputString)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
     $b64 = [Convert]::ToBase64String($bytes)
-    return $b64.TrimEnd('=').Replace('+','-').Replace('/','_')
+    return $b64.TrimEnd('=').Replace('+', '-').Replace('/', '_')
 }
 
 function New-GcpAccessToken {
@@ -84,11 +88,11 @@ function New-GcpAccessToken {
         
         $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $claim = @{
-            iss = $ServiceAccount.client_email
-            scope = "https://www.googleapis.com/auth/datastore"
-            aud = "https://oauth2.googleapis.com/token"
-            exp = $now + 3600
-            iat = $now
+            iss   = $ServiceAccount.client_email
+            scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/drive.file"
+            aud   = "https://oauth2.googleapis.com/token"
+            exp   = $now + 3600
+            iat   = $now
         } | ConvertTo-Json -Compress
 
         $b64Header = ConvertTo-Base64Url -InputString $header
@@ -111,13 +115,13 @@ function New-GcpAccessToken {
         
         # Sign the hash
         $signatureBytes = $rsaCng.SignHash($hash, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-        $b64Signature = [Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+        $b64Signature = [Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 
         # 4. Build JWT and Request Access Token
         $jwt = "$message.$b64Signature"
         $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" -Method Post -Body @{
             grant_type = "urn:ietf:params:oauth:grant-type:jwt-bearer"
-            assertion = $jwt
+            assertion  = $jwt
         }
 
         # Cleanup
@@ -125,7 +129,8 @@ function New-GcpAccessToken {
         $cngKey.Dispose()
 
         return $tokenResponse.access_token
-    } catch {
+    }
+    catch {
         Write-Log "Failed to generate GCP Access Token (Compatibility Error): $_" "ERROR"
         return $null
     }
@@ -143,11 +148,12 @@ function Send-FirestoreTelemetry {
         # Format for Firestore Document REST API
         $firestoreBody = @{
             fields = @{
-                deviceId = @{ stringValue = $Data.deviceId }
-                timestamp = @{ timestampValue = $Data.timestamp }
-                eventType = @{ stringValue = $Data.eventType }
-                profilesFound = @{ integerValue = $Data.profilesFound }
+                deviceId        = @{ stringValue = $Data.deviceId }
+                timestamp       = @{ timestampValue = $Data.timestamp }
+                eventType       = @{ stringValue = $Data.eventType }
+                profilesFound   = @{ integerValue = $Data.profilesFound }
                 profilesCleaned = @{ integerValue = $Data.profilesCleaned }
+                bitlockerSync   = @{ stringValue = $Data.bitlockerSync }
             }
         } | ConvertTo-Json -Depth 5
 
@@ -156,7 +162,7 @@ function Send-FirestoreTelemetry {
         
         $headers = @{
             "Authorization" = "Bearer $AccessToken"
-            "Content-Type" = "application/json"
+            "Content-Type"  = "application/json"
         }
 
         $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $firestoreBody -TimeoutSec 15
@@ -165,6 +171,56 @@ function Send-FirestoreTelemetry {
     }
     catch {
         Write-Log "Failed to push telemetry to Firestore: $_" "ERROR"
+        return $false
+    }
+}
+
+function Send-DriveUploadMultipart {
+    param(
+        [string]$FileName,
+        [string]$Content,
+        [string]$FolderId,
+        [string]$AccessToken
+    )
+    
+    try {
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $metadata = @{ 
+            name    = $FileName
+            parents = @($FolderId)
+        } | ConvertTo-Json -Compress
+
+        # Costruisce il corpo multipart in memoria per evitare file temporanei
+        $bodyParts = @(
+            "--$boundary",
+            "Content-Type: application/json; charset=UTF-8",
+            "",
+            $metadata,
+            "--$boundary",
+            "Content-Type: text/plain; charset=UTF-8",
+            "",
+            $Content,
+            "--${boundary}--"
+        )
+        $body = $bodyParts -join "`r`n"
+
+        $uri = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+        $headers = @{
+            "Authorization" = "Bearer $AccessToken"
+        }
+
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -ContentType "multipart/related; boundary=$boundary" -ErrorAction Stop
+        Write-Log "File successfully uploaded to Drive: $($response.name) (ID: $($response.id))"
+        
+        # Vaporizzazione immediata del contenuto sensibile dalla memoria
+        $Content = $null
+        $body = $null
+        [System.GC]::Collect()
+
+        return $true
+    }
+    catch {
+        Write-Log "Failed to upload file to Google Drive: $_" "ERROR"
         return $false
     }
 }
@@ -206,7 +262,8 @@ function Cleanup-Profile {
             Remove-Item -Path $Profile.FullName -Recurse -Force -ErrorAction Stop
             Write-Log "Profile successfully erased."
             return $true
-        } catch {
+        }
+        catch {
             Write-Log "Partial failure or locked files during cleanup: $_" "ERROR"
             return $false
         }
@@ -256,6 +313,46 @@ try {
     $b64Token = $null
     $saObj.private_key = $null
     $saObj = $null
+
+    # region BitLocker Escrow
+    $bitlockerStatus = "skipped"
+    if ($BitlockerEnabled -and $gcpToken) {
+        try {
+            Write-Log "Initiating BitLocker Escrow to Google Drive..."
+            $blVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+            $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+            
+            if ($recoveryProtector) {
+                $recoveryKey = $recoveryProtector.RecoveryPassword 
+                $fileName = "$($env:COMPUTERNAME)_SystemDrive_BitLocker.txt"
+                
+                # Upload Multi-Part
+                $uploadRes = Send-DriveUploadMultipart -FileName $fileName -Content $recoveryKey -FolderId $BitlockerFolderId -AccessToken $gcpToken
+                
+                if ($uploadRes) {
+                    Write-Log "BitLocker Escrow successful for disk: $($env:SystemDrive)"
+                    $bitlockerStatus = "success"
+                }
+                else {
+                    Write-Log "BitLocker Escrow failed to upload." "ERROR"
+                    $bitlockerStatus = "failed"
+                }
+
+                # Vaporizzazione immediata della chiave dalla memoria
+                $recoveryKey = $null
+                $recoveryProtector = $null
+                $blVolume = $null
+                [System.GC]::Collect()
+            }
+            else {
+                Write-Log "No RecoveryPassword protector found for disk: $($env:SystemDrive)" "WARN"
+            }
+        }
+        catch {
+            Write-Log "Failed to perform BitLocker Escrow: $_" "ERROR"
+        }
+    }
+    # endregion
     
     # Get profiles older than threshold
     Write-Log "Checking for profiles older than $MinProfileAgeDays days..."
@@ -291,9 +388,11 @@ try {
                 eventType       = "heartbeat_cleanup"
                 profilesFound   = [int]$oldProfiles.Count
                 profilesCleaned = [int]$cleanedCount
+                bitlockerSync   = $bitlockerStatus
             }
             Send-FirestoreTelemetry -Data $telemetryData -AccessToken $gcpToken -ProjectId $gcpProjectId | Out-Null
-        } catch {
+        }
+        catch {
             Write-Log "Failed to send heartbeat telemetry: $_" "WARN"
         }
     }
