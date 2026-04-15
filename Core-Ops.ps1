@@ -45,16 +45,22 @@ function Write-Log {
 function Get-RegistryValueSecure {
     param([string]$Path, [string]$Name)
     try {
-        if (Test-Path $Path) {
-            $key = Get-Item -Path $Path -ErrorAction Stop
-            if ($key.GetValueNames() -contains $Name) {
-                return $key.GetValue($Name)
-            }
+        # Forza l'apertura della vista a 64-bit per evitare WOW6432Node redirection
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+        $subKeyPath = $Path.Replace("HKLM:\", "").Replace("HKEY_LOCAL_MACHINE\", "")
+        $subKey = $baseKey.OpenSubKey($subKeyPath)
+        
+        if ($subKey) {
+            $value = $subKey.GetValue($Name)
+            $subKey.Close()
+            $baseKey.Close()
+            return $value
         }
+        $baseKey.Close()
         return $null
     }
     catch {
-        Write-Log "Failed to access registry path $Path: $_" "ERROR"
+        Write-Log "Failed to access registry via .NET API: $_" "DEBUG"
         return $null
     }
 }
