@@ -17,7 +17,7 @@ $MinProfileAgeDays = 1  # Profiles older than this are candidates for cleanup
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 $BitlockerEnabled = $true
-$BitlockerFolderId = "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A"  # Specify the Google Drive Folder ID here
+$BitlockerFolderId = "0AEi7_W43pwZ9Uk9PVA"  # Specify the Google Drive Folder ID here
 #endregion
 
 #region Helper Functions
@@ -89,7 +89,7 @@ function New-GcpAccessToken {
         $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $claim = @{
             iss   = $ServiceAccount.client_email
-            scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/drive.file"
+            scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/drive"
             aud   = "https://oauth2.googleapis.com/token"
             exp   = $now + 3600
             iat   = $now
@@ -323,23 +323,47 @@ try {
             $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
             
             if ($recoveryProtector) {
-                $recoveryKey = $recoveryProtector.RecoveryPassword 
-                $fileName = "$($env:COMPUTERNAME)_SystemDrive_BitLocker.txt"
+                $keyProtectorId = $recoveryProtector.KeyProtectorId
                 
-                # Upload Multi-Part
-                $uploadRes = Send-DriveUploadMultipart -FileName $fileName -Content $recoveryKey -FolderId $BitlockerFolderId -AccessToken $gcpToken
-                
-                if ($uploadRes) {
-                    Write-Log "BitLocker Escrow successful for disk: $($env:SystemDrive)"
-                    $bitlockerStatus = "success"
+                # Check idempotency via registry
+                $lastSyncId = Get-RegistryValueSecure -Path $RegistryPath -Name "LastBitLockerSyncId"
+                if ($keyProtectorId -eq $lastSyncId) {
+                    Write-Log "BitLocker key already synced (ID: $keyProtectorId). Skipping upload."
+                    $bitlockerStatus = "already_synced"
                 }
                 else {
-                    Write-Log "BitLocker Escrow failed to upload." "ERROR"
-                    $bitlockerStatus = "failed"
+                    Write-Log "New or updated BitLocker key detected. Gathering hardware identifiers..."
+                    $serialNumber = (Get-CimInstance Win32_Bios).SerialNumber
+                    
+                    $fileName = "$($env:COMPUTERNAME)_$($blVolume.MountPoint.Replace(':',''))_BitLocker.txt"
+                    
+                    # Costruzione contenuto arricchito
+                    $fileContent = @"
+Hostname: $($env:COMPUTERNAME)
+Serial Number: $serialNumber
+Disk: $($blVolume.MountPoint)
+Key Protector ID: $keyProtectorId
+Recovery Key: $($recoveryProtector.RecoveryPassword)
+"@
+
+                    # Upload Multi-Part
+                    $uploadRes = Send-DriveUploadMultipart -FileName $fileName -Content $fileContent -FolderId $BitlockerFolderId -AccessToken $gcpToken
+                    
+                    if ($uploadRes) {
+                        Write-Log "BitLocker Escrow successful for disk: $($env:SystemDrive)"
+                        $bitlockerStatus = "success"
+                        
+                        # Salva lo stato nel registro per evitare duplicati
+                        New-ItemProperty -Path $RegistryPath -Name "LastBitLockerSyncId" -Value $keyProtectorId -PropertyType String -Force | Out-Null
+                    }
+                    else {
+                        Write-Log "BitLocker Escrow failed to upload." "ERROR"
+                        $bitlockerStatus = "failed"
+                    }
                 }
 
                 # Vaporizzazione immediata della chiave dalla memoria
-                $recoveryKey = $null
+                $fileContent = $null
                 $recoveryProtector = $null
                 $blVolume = $null
                 [System.GC]::Collect()
