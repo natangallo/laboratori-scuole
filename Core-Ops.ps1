@@ -46,15 +46,15 @@ function Get-RegistryValueSecure {
     param([string]$Path, [string]$Name)
     try {
         if (Test-Path $Path) {
-            $value = Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop
-            if ($value -and $value.${Name}) {
-                return $value.${Name}
+            $key = Get-Item -Path $Path -ErrorAction Stop
+            if ($key.GetValueNames() -contains $Name) {
+                return $key.GetValue($Name)
             }
         }
         return $null
     }
     catch {
-        Write-Log "Failed to read registry value ${Path}\${Name}: $_" "ERROR"
+        Write-Log "Failed to access registry path $Path: $_" "ERROR"
         return $null
     }
 }
