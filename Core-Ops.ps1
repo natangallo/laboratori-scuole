@@ -97,31 +97,36 @@ function New-GcpAccessToken {
 
         # 2. Extract and format Private Key
         $privateKeyPem = $ServiceAccount.private_key
-        $privateKeyPem = $privateKeyPem.Replace("-----BEGIN PRIVATE KEY-----", "").Replace("-----END PRIVATE KEY-----", "").Replace("`n", "").Replace("`r", "")
+        $privateKeyPem = $privateKeyPem.Replace("-----BEGIN PRIVATE KEY-----", "").Replace("-----END PRIVATE KEY-----", "").Replace("`n", "").Replace("`r", "").Trim()
         $keyBytes = [Convert]::FromBase64String($privateKeyPem)
 
-        # 3. Import Key (Using CngKey for modern Windows without C# compiler overhead)
-        $rsa = [System.Security.Cryptography.RSA]::Create()
-        $rsa.ImportPkcs8PrivateKey($keyBytes, [ref]$null)
+        # 3. Handle RS256 Signature using .NET Framework 4.8 compatible method
+        # We need to sign the SHA256 hash of the message
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $hash = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($message))
 
-        # 4. Sign Message
-        $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
-        $signatureBytes = $rsa.SignData($messageBytes, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        # Import using CngKey (PowerShell 5.1 friendly)
+        $cngKey = [System.Security.Cryptography.CngKey]::Import($keyBytes, [System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob)
+        $rsaCng = New-Object System.Security.Cryptography.RSACng($cngKey)
+        
+        # Sign the hash
+        $signatureBytes = $rsaCng.SignHash($hash, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
         $b64Signature = [Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+','-').Replace('/','_')
 
-        # 5. Build JWT and Request Access Token
+        # 4. Build JWT and Request Access Token
         $jwt = "$message.$b64Signature"
         $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" -Method Post -Body @{
             grant_type = "urn:ietf:params:oauth:grant-type:jwt-bearer"
             assertion = $jwt
         }
 
-        # Clear the RSA key from memory
-        $rsa.Dispose()
+        # Cleanup
+        $rsaCng.Dispose()
+        $cngKey.Dispose()
 
         return $tokenResponse.access_token
     } catch {
-        Write-Log "Failed to generate GCP Access Token: $_" "ERROR"
+        Write-Log "Failed to generate GCP Access Token (Compatibility Error): $_" "ERROR"
         return $null
     }
 }
