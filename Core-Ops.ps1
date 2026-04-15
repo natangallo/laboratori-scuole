@@ -287,7 +287,7 @@ try {
         try {
             $telemetryData = @{
                 deviceId        = $env:COMPUTERNAME
-                timestamp       = (Get-Date + (Get-Date).GetUtcOffset()).ToString("o")
+                timestamp       = (Get-Date).ToString("o")
                 eventType       = "heartbeat_cleanup"
                 profilesFound   = [int]$oldProfiles.Count
                 profilesCleaned = [int]$cleanedCount
