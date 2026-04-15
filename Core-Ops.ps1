@@ -13,7 +13,7 @@
 $LogPath = "C:\ProgramData\Rekordata\Logs"
 $TelemetryEnabled = $true
 $ProfilePath = "C:\Users"
-$MinProfileAgeDays = 30  # Profiles older than this are candidates for cleanup
+$MinProfileAgeDays = 1  # Profiles older than this are candidates for cleanup
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 #endregion
