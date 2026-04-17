@@ -17,7 +17,8 @@ $MinProfileAgeDays = 1  # Profiles older than this are candidates for cleanup
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 $BitlockerEnabled = $true
-$BitlockerFolderId = "0AEi7_W43pwZ9Uk9PVA"  # Specify the Google Drive Folder ID here
+$BitlockerUsedSpaceOnly = $true  # $true = Cripta solo spazio usato (veloce) | $false = Full Disk
+$BitlockerFolderId = "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A"
 #endregion
 
 #region Helper Functions
@@ -232,53 +233,260 @@ function Send-DriveUploadMultipart {
     }
 }
 
-function Get-OlderProfiles {
-    param([string]$Path, [int]$MinAgeDays)
+# WHITELIST: Profili mai toccati dal Garbage Collector.
+# Aggiungere qui i pattern dei docenti o degli admin operativi.
+$GC_ExcludeList = @("Administrator", "ladmin", "Public", "Default", "Default User", "All Users")
+# Pattern aggiuntivi per protezione docenti (es. prefisso "doc." nei profili GCPW)
+$GC_ExcludePatterns = @("doc.*", "admin.*", "supervisore.*")
+
+function Get-StaleProfiles {
+    <#
+    .SYNOPSIS
+        Interroga WMI per ottenere profili utente inattivi da eliminare.
+        Usa Win32_UserProfile per accedere a LastUseTime e Special in modo nativo.
+        NOTA CRITICA: Usa SOLO questa funzione per identificare i candidati, mai
+        Get-ChildItem, in modo da operare always via CIM e pulire anche il registro.
+    #>
+    param([int]$MinAgeDays)
     try {
         $cutoffDate = (Get-Date).AddDays(-$MinAgeDays)
-        $profiles = Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue | 
-        Where-Object {
-            # Skip default and system profiles
-            $_.Name -notin @("Default", "Default User", "All Users", "Public", "Administrator", "ladmin") -and
-            # Check if profile is older than cutoff
-            ($_.CreationTime -lt $cutoffDate)
+
+        $candidates = Get-CimInstance -Class Win32_UserProfile | Where-Object {
+            $pName = $_.LocalPath.Split('\')[-1]
+            
+            # Esclude profili di sistema e cartelle speciali Windows
+            $_.Special -eq $false -and
+            # Esclude la whitelist nominativa
+            $pName -notin $GC_ExcludeList -and
+            # Esclude pattern docenti/admin via wildcard
+            (-not ($GC_ExcludePatterns | Where-Object { $pName -like $_ })) -and
+            # Controlla l'ultimo UTILIZZO reale
+            $_.LastUseTime -ne $null -and
+            $_.LastUseTime -lt $cutoffDate -and
+            # Safety: non toccare il profilo utente attualmente loggato
+            $_.Loaded -eq $false
         }
-        return $profiles
+        return $candidates
     }
     catch {
-        Write-Log "Error getting older profiles: $_" "ERROR"
+        Write-Log "Error querying Win32_UserProfile via CIM: $_" "ERROR"
         return @()
     }
 }
 
 function Cleanup-Profile {
-    param([System.IO.DirectoryInfo]$Profile)
+    <#
+    .SYNOPSIS
+        Rimuove il profilo utente usando Remove-CimInstance.
+        CRITICO: Remove-CimInstance su Win32_UserProfile rimuove ATOMICAMENTE
+        sia la cartella C:\Users\<nome> che la chiave di registro in
+        HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList.
+        Questo previene il "zombie profile" (badge presente, cartella assente,
+        Windows crea profilo temporaneo al login successivo).
+    #>
+    param([CimInstance]$ProfileInstance)
     try {
-        Write-Log "Cleaning up profile: $($Profile.Name)"
-        
-        # In a real implementation, you might:
-        # 1. Check if user is currently logged in
-        # 2. Check if profile has active processes
-        # 3. Archive important data before deletion
-        # 4. Then delete the profile
-        
-        # Live Execution: Rimuove i dati in modo forzato
-        Write-Log "Erasing profile footprint: $($Profile.FullName)" "WARN"
-        
-        try {
-            Remove-Item -Path $Profile.FullName -Recurse -Force -ErrorAction Stop
-            Write-Log "Profile successfully erased."
-            return $true
-        }
-        catch {
-            Write-Log "Partial failure or locked files during cleanup: $_" "ERROR"
+        $profileName = $ProfileInstance.LocalPath.Split('\')[-1]
+        Write-Log "[GC] Avvio pulizia profilo CIM: $profileName (LastUse: $($ProfileInstance.LastUseTime))"
+
+        # Doppio controllo di sicurezza: non rimuovere se caricato
+        if ($ProfileInstance.Loaded) {
+            Write-Log "[GC] Profilo $profileName e' attualmente caricato. Skip per sicurezza." "WARN"
             return $false
+        }
+
+        Remove-CimInstance -InputObject $ProfileInstance -ErrorAction Stop
+        Write-Log "[GC] Profilo $profileName rimosso (filesystem + registro)." 
+        return $true
+    }
+    catch {
+        Write-Log "[GC] Errore rimozione profilo CIM $($ProfileInstance.LocalPath): $_" "ERROR"
+        return $false
+    }
+}
+
+function Invoke-PremiumNotification {
+    <#
+    .SYNOPSIS
+        Crea uno script UI e un task programmato per eseguirlo nella sessione utente.
+        Permette all'utente di scegliere tra riavvio immediato o posticipato.
+    #>
+    Write-Log "Generazione UI Premium per l'utente..."
+    $uiPath = "C:\ProgramData\Rekordata\BitLocker-UI.ps1"
+
+    $uiScript = @"
+Add-Type -AssemblyName System.Windows.Forms
+`$msg = "REKORDATA - Sicurezza Sistemi`n`nLa protezione BitLocker e' stata attivata con successo sul disco di sistema. I tuoi dati sono ora in fase di protezione.`n`nPer completare ufficialmente la configurazione, e' consigliato un riavvio del computer al termine della sessione attuale.`n`nVuoi riavviare ora?"
+`$title = "Protezione Disco Attivata"
+
+# Messaggio con tasti Sì e No. Sì = Riavvio tra 60s, No = Chiusura semplice.
+`$res = [System.Windows.Forms.MessageBox]::Show(`$msg, `$title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+
+if (`$res -eq [System.Windows.Forms.DialogResult]::Yes) {
+    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza del sistema. Salva il tuo lavoro." /f
+}
+
+# --- SELF CLEANUP (Premium UI) ---
+# Rimuove il task e lo script stesso alla chiusura per non lasciare tracce
+Unregister-ScheduledTask -TaskName "RekordataBitLockerUI" -Confirm:`$false -ErrorAction SilentlyContinue
+Remove-Item -Path `$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+"@
+
+    try {
+        # Hardening Permessi Cartella
+        if (-not (Test-Path "C:\ProgramData\Rekordata")) { 
+            New-Item -ItemType Directory -Path "C:\ProgramData\Rekordata" -Force | Out-Null 
+            # Rimuove ereditarietà e dà accesso solo a SYSTEM e Admins
+            $acl = Get-Acl "C:\ProgramData\Rekordata"
+            $acl.SetAccessRuleProtection($true, $false)
+            $rules = @(
+                New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"),
+                New-Object System.Security.AccessControl.FileSystemAccessRule("Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow"),
+                New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+            )
+            $rules | ForEach-Object { $acl.AddAccessRule($_) }
+            Set-Acl "C:\ProgramData\Rekordata" $acl
+        }
+        
+        $uiScript | Out-File -FilePath $uiPath -Encoding UTF8 -Force
+
+        $taskName = "RekordataBitLockerUI"
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        
+        $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$uiPath`""
+        $principal = New-ScheduledTaskPrincipal -GroupId "Users"
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        Write-Log "UI Premium inviata all'utente tramite Scheduled Task."
+    }
+    catch {
+        Write-Log "Failed to trigger Premium UI: $_" "ERROR"
+    }
+}
+
+function Get-BitLockerMDMPolicy {
+    <#
+    .SYNOPSIS
+        Legge la policy BitLocker pushata da Google DM via MDM/OMA-URI.
+        Il registro HKLM:\SOFTWARE\Policies\Microsoft\FVE viene scritto da Windows
+        quando riceve la policy dall'MDM. La sua presenza indica che Google DM
+        ha già inviato la direttiva BitLocker al dispositivo.
+    #>
+    $fvePath = "HKLM:\SOFTWARE\Policies\Microsoft\FVE"
+    $result = @{
+        PolicyPresent    = $false
+        EncryptionMethod = "xts_aes256"  # Nomenclature specifica per manage-bde
+    }
+
+    try {
+        if (-not (Test-Path $fvePath)) {
+            Write-Log "BitLocker policy key absent (FVE). Google DM has not pushed BitLocker policy yet." "WARN"
+            return $result
+        }
+
+        $result.PolicyPresent = $true
+        Write-Log "BitLocker MDM policy key confirmed by Google DM."
+
+        # Mappa OMA-URI EncryptionMethodWithXtsOs → nomenclatura manage-bde
+        $methodMap = @{
+            3 = "aes128"
+            4 = "aes256"
+            6 = "xts_aes128"
+            7 = "xts_aes256"
+        }
+
+        $rawMethod = (Get-ItemProperty -Path $fvePath -ErrorAction SilentlyContinue).EncryptionMethodWithXtsOs
+        if ($null -ne $rawMethod -and $methodMap.ContainsKey([int]$rawMethod)) {
+            $result.EncryptionMethod = $methodMap[[int]$rawMethod]
+            Write-Log "MDM Encryption method (manage-bde style): $($result.EncryptionMethod)"
         }
     }
     catch {
-        Write-Log "Failed to cleanup profile $($Profile.Name): $_" "ERROR"
-        return $false
+        Write-Log "Error reading BitLocker MDM policy from registry: $_" "ERROR"
     }
+
+    return $result
+}
+
+function Invoke-BitLockerActivation {
+    param([string]$EncryptionMethod = "xts_aes256")
+    <#
+    .SYNOPSIS
+        Attiva BitLocker in modo silente usando manage-bde per massima compatibilità.
+        Gestisce in modo idempotente protettori TPM e RecoveryPassword.
+    #>
+    $result = @{
+        Success    = $false
+        StatusNote = ""
+    }
+
+    try {
+        $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+
+        # 1. CASO: SOSPESO
+        if ($vol.ProtectionStatus -eq "Off" -and $vol.VolumeStatus -eq "FullyEncrypted") {
+            Write-Log "BitLocker risulta SOSPESO. Ripristino protezione..."
+            manage-bde -resume $env:SystemDrive | Out-Null
+            $result.Success = $true
+            $result.StatusNote = "resumed"
+            return $result
+        }
+
+        # 2. CASO: GIÀ ATTIVO
+        if ($vol.ProtectionStatus -eq "On") {
+            Write-Log "BitLocker già attivo."
+            if (-not ($vol.KeyProtector | Where-Object {$_.KeyProtectorType -eq 'RecoveryPassword'})) {
+                Write-Log "Chiave di ripristino assente. Aggiunta in corso..."
+                manage-bde -protectors -add $env:SystemDrive -RecoveryPassword | Out-Null
+                $result.StatusNote = "protector_added"
+            } else {
+                $result.StatusNote = "already_active"
+            }
+            $result.Success = $true
+            return $result
+        }
+
+        # 3. CASO: DISATTIVATO (Attivazione Silente)
+        Write-Log "Avvio attivazione silente via manage-bde (UsedSpaceOnly=$BitlockerUsedSpaceOnly)..."
+        
+        # Gestione TPM
+        if (-not ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'Tpm' })) {
+            Write-Log "Aggiunta protettore TPM..."
+            manage-bde -protectors -add $env:SystemDrive -tpm | Out-Null
+        }
+
+        # Gestione Recovery Password
+        if (-not ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })) {
+            Write-Log "Aggiunta chiave di ripristino..."
+            manage-bde -protectors -add $env:SystemDrive -RecoveryPassword | Out-Null
+        }
+
+        # Commando di attivazione finale con SkipHardwareTest (attivazione LIVE)
+        $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest")
+        if ($BitlockerUsedSpaceOnly) { $cmdArgs += "-Used" }
+
+        Write-Log "Running: manage-bde $($cmdArgs -join ' ')"
+        $output = manage-bde.exe @cmdArgs
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -eq 0) {
+            Write-Log "BitLocker attivato correttamente."
+            Invoke-PremiumNotification
+            $result.Success = $true
+            $result.StatusNote = "activated"
+        } else {
+            Write-Log "Errore manage-bde ($exitCode): $output" "ERROR"
+            $result.StatusNote = "activation_error"
+        }
+    }
+    catch {
+        Write-Log "BitLocker activation failed: $_" "ERROR"
+        $result.StatusNote = "activation_error"
+    }
+
+    return $result
 }
 #endregion
 
@@ -322,30 +530,53 @@ try {
     $saObj = $null
 
     # region BitLocker Escrow
+    # Architettura a 3 step: Google DM come trigger → Attivazione silente → Escrow
     $bitlockerStatus = "skipped"
     if ($BitlockerEnabled -and $gcpToken) {
         try {
-            Write-Log "Initiating BitLocker Escrow to Google Drive..."
-            $blVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
-            $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
-            
-            if ($recoveryProtector) {
-                $keyProtectorId = $recoveryProtector.KeyProtectorId
-                
-                # Check idempotency via registry
-                $lastSyncId = Get-RegistryValueSecure -Path $RegistryPath -Name "LastBitLockerSyncId"
-                if ($keyProtectorId -eq $lastSyncId) {
-                    Write-Log "BitLocker key already synced (ID: $keyProtectorId). Skipping upload."
-                    $bitlockerStatus = "already_synced"
+            # --- Step 1: Google DM è il trigger ---
+            # La presenza del registro HKLM:\SOFTWARE\Policies\Microsoft\FVE indica
+            # che Google DM ha pushato la policy BitLocker. Senza policy → skip totale.
+            $mdmPolicy = Get-BitLockerMDMPolicy
+
+            if (-not $mdmPolicy.PolicyPresent) {
+                Write-Log "Google DM BitLocker policy not present on this device. Skipping activation and escrow." "WARN"
+                $bitlockerStatus = "policy_absent"
+            }
+            else {
+                Write-Log "Google DM policy confirmed (method: $($mdmPolicy.EncryptionMethod)). Proceeding with activation check..."
+
+                # --- Step 2: Attivazione silente condizionale ---
+                $activation = Invoke-BitLockerActivation -EncryptionMethod $mdmPolicy.EncryptionMethod
+
+                if (-not $activation.Success) {
+                    Write-Log "BitLocker activation step failed ($($activation.StatusNote)). Aborting escrow." "ERROR"
+                    $bitlockerStatus = "activation_failed"
                 }
                 else {
-                    Write-Log "New or updated BitLocker key detected. Gathering hardware identifiers..."
-                    $serialNumber = (Get-CimInstance Win32_Bios).SerialNumber
-                    
-                    $fileName = "$($env:COMPUTERNAME)_$($blVolume.MountPoint.Replace(':',''))_BitLocker.txt"
-                    
-                    # Costruzione contenuto arricchito
-                    $fileContent = @"
+                    Write-Log "BitLocker state OK [$($activation.StatusNote)]. Initiating Escrow to Google Drive..."
+
+                    # --- Step 3: Escrow della chiave di ripristino ---
+                    $blVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+                    $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+
+                    if ($recoveryProtector) {
+                        $keyProtectorId = $recoveryProtector.KeyProtectorId
+
+                        # Check idempotency via registry
+                        $lastSyncId = Get-RegistryValueSecure -Path $RegistryPath -Name "LastBitLockerSyncId"
+                        if ($keyProtectorId -eq $lastSyncId) {
+                            Write-Log "BitLocker key already synced (ID: $keyProtectorId). Skipping upload."
+                            $bitlockerStatus = "already_synced"
+                        }
+                        else {
+                            Write-Log "New or updated BitLocker key detected. Gathering hardware identifiers..."
+                            $serialNumber = (Get-CimInstance Win32_Bios).SerialNumber
+
+                            $fileName = "$($env:COMPUTERNAME)_$($blVolume.MountPoint.Replace(':',''))_BitLocker.txt"
+
+                            # Costruzione contenuto arricchito
+                            $fileContent = @"
 Hostname: $($env:COMPUTERNAME)
 Serial Number: $serialNumber
 Disk: $($blVolume.MountPoint)
@@ -353,61 +584,63 @@ Key Protector ID: $keyProtectorId
 Recovery Key: $($recoveryProtector.RecoveryPassword)
 "@
 
-                    # Upload Multi-Part
-                    $uploadRes = Send-DriveUploadMultipart -FileName $fileName -Content $fileContent -FolderId $BitlockerFolderId -AccessToken $gcpToken
-                    
-                    if ($uploadRes) {
-                        Write-Log "BitLocker Escrow successful for disk: $($env:SystemDrive)"
-                        $bitlockerStatus = "success"
-                        
-                        # Salva lo stato nel registro per evitare duplicati
-                        New-ItemProperty -Path $RegistryPath -Name "LastBitLockerSyncId" -Value $keyProtectorId -PropertyType String -Force | Out-Null
+                            # Upload Multi-Part
+                            $uploadRes = Send-DriveUploadMultipart -FileName $fileName -Content $fileContent -FolderId $BitlockerFolderId -AccessToken $gcpToken
+
+                            if ($uploadRes) {
+                                Write-Log "BitLocker Escrow successful for disk: $($env:SystemDrive)"
+                                $bitlockerStatus = "success"
+
+                                # Salva lo stato nel registro per evitare duplicati
+                                New-ItemProperty -Path $RegistryPath -Name "LastBitLockerSyncId" -Value $keyProtectorId -PropertyType String -Force | Out-Null
+                            }
+                            else {
+                                Write-Log "BitLocker Escrow failed to upload." "ERROR"
+                                $bitlockerStatus = "failed"
+                            }
+                        }
+
+                        # Vaporizzazione immediata della chiave dalla memoria
+                        $fileContent = $null
+                        $recoveryProtector = $null
+                        $blVolume = $null
+                        [System.GC]::Collect()
                     }
                     else {
-                        Write-Log "BitLocker Escrow failed to upload." "ERROR"
+                        Write-Log "No RecoveryPassword protector found after activation step. Unexpected state." "ERROR"
                         $bitlockerStatus = "failed"
                     }
                 }
-
-                # Vaporizzazione immediata della chiave dalla memoria
-                $fileContent = $null
-                $recoveryProtector = $null
-                $blVolume = $null
-                [System.GC]::Collect()
-            }
-            else {
-                Write-Log "No RecoveryPassword protector found for disk: $($env:SystemDrive)" "WARN"
             }
         }
         catch {
-            Write-Log "Failed to perform BitLocker Escrow: $_" "ERROR"
+            Write-Log "Failed in BitLocker block: $_" "ERROR"
         }
     }
     # endregion
     
-    # Get profiles older than threshold
-    Write-Log "Checking for profiles older than $MinProfileAgeDays days..."
-    $oldProfiles = Get-OlderProfiles -Path $ProfilePath -MinAgeDays $MinProfileAgeDays
-    
-    if ($oldProfiles.Count -eq 0) {
-        Write-Log "No profiles found older than $MinProfileAgeDays days"
+    # Garbage Collector: interroga WMI, non il filesystem
+    Write-Log "[GC] Avvio scansione profili inattivi (soglia: $MinProfileAgeDays giorni)..."
+    $staleProfiles = Get-StaleProfiles -MinAgeDays $MinProfileAgeDays
+    $cleanedCount = 0
+
+    if ($staleProfiles.Count -eq 0) {
+        Write-Log "[GC] Nessun profilo candidato trovato. Sistema pulito."
     }
     else {
-        Write-Log "Found $($oldProfiles.Count) profiles older than $MinProfileAgeDays days:"
-        foreach ($profile in $oldProfiles) {
-            Write-Log "  - $($profile.Name) (created: $($profile.CreationTime))"
+        Write-Log "[GC] Trovati $($staleProfiles.Count) profili candidati alla rimozione:"
+        foreach ($p in $staleProfiles) {
+            Write-Log "  - $($p.LocalPath.Split('\\')[-1]) | LastUse: $($p.LastUseTime) | Loaded: $($p.Loaded)"
         }
-        
-        # Process each profile
-        $cleanedCount = 0
-        foreach ($profile in $oldProfiles) {
-            if (Cleanup-Profile -Profile $profile) {
+
+        foreach ($p in $staleProfiles) {
+            if (Cleanup-Profile -ProfileInstance $p) {
                 $cleanedCount++
             }
-            Start-Sleep -Milliseconds 500  # Small delay between operations
+            Start-Sleep -Milliseconds 500
         }
-        
-        Write-Log "Cleanup complete. $($cleanedCount) profiles processed."
+
+        Write-Log "[GC] Pulizia completata. $cleanedCount profili rimossi (filesystem + registro)."
     }
 
     # Heartbeat Telemetry: Inviata sempre se il token è valido
