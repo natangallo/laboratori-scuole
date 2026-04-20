@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.8 - Modular Architecture (Fixed Cache-Busting & PS 5.1 Crypto).
+    v2.2.9 - Modular Architecture (Anti-Cache & PS 5.1 Crypto).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.8
+    Version: 2.2.9
 #>
 
 #region 1. Configuration
@@ -15,7 +15,13 @@ $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 # Base URL reflects the vertical folder structure for Windows
 $GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
-$ModuleBaseUrl = $GitHubRepo # Modules will be fetched relative to this (e.g., modules/Script.ps1)
+$ModuleBaseUrl = $GitHubRepo
+
+# Global Headers for Cache-Busting
+$GlobalHeaders = @{
+    "Cache-Control" = "no-cache"
+    "Pragma"        = "no-cache"
+}
 #endregion
 
 #region 2. Plumbing Functions
@@ -139,7 +145,7 @@ function Invoke-RemoteModule {
         }
         # Add cache-busting
         $url += "?nocache=$(Get-Date -UFormat %s)"
-        $scriptContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
+        $scriptContent = Invoke-RestMethod -Uri $url -Headers $GlobalHeaders -ErrorAction Stop
         
         if ($scriptContent) {
             Write-Log "Executing $Keyword in-memory..."
@@ -183,7 +189,7 @@ function Update-ModuleRegistry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.8 Starting ==="
+    Write-Log "=== Launcher v2.2.9 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -193,7 +199,7 @@ try {
     $projectId = $saObj.project_id
     
     $manifestUrl = ("${GitHubRepo}manifest.json").Trim() + "?nocache=$(Get-Date -UFormat %s)"
-    $manifest = Invoke-RestMethod -Uri $manifestUrl -ErrorAction Stop
+    $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers $GlobalHeaders -ErrorAction Stop
     $results = @()
     
     foreach ($mod in $manifest.modules) {
@@ -215,7 +221,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.8 Completed ==="
+    Write-Log "=== Launcher v2.2.9 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
