@@ -17,7 +17,6 @@ $BaseDir = "C:\ProgramData\Rekordata"
 $LogPath = Join-Path $BaseDir "Logs"
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
-$ModuleBaseUrl = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/modules/"
 $GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
 #endregion
 
