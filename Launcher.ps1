@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.5 - Modular Architecture (Final Auth & BDE Debug).
+    v2.2.6 - Modular Architecture (Core-Ops Alignment Fix).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.5
+    Version: 2.2.6
 #>
 
 #region 1. Internal Logging & TLS
@@ -65,14 +65,14 @@ function New-GcpAccessToken {
         $signatureBytes = $rsaCng.SignHash($hash, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
         $jwt = "$message.$([Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_'))"
 
-        # Fix: PS 5.1 might send colons raw. Google expects them URL-encoded.
-        # Hardcoding the encoded version of "urn:ietf:params:oauth-grant-type:jwt-bearer"
-        $encodedGrant = "urn%3Aietf%3Aparams%3Aoauth-grant-type%3Ajwt-bearer"
-        $body = "grant_type=$($encodedGrant)&assertion=$($jwt)"
+        # Fix: Reverting to Core-Ops syntax (Hashtable + Correct Colons)
+        $body = @{
+            grant_type = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+            assertion  = $jwt
+        }
         
         $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" `
             -Method Post `
-            -ContentType "application/x-www-form-urlencoded" `
             -Body $body
         return $tokenResponse.access_token
     }
@@ -116,7 +116,7 @@ function Send-Telemetry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.5 Starting ==="
+    Write-Log "=== Launcher v2.2.6 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -141,7 +141,7 @@ try {
     
     $payload = @{
         last_run = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        version = "2.2.5"
+        version = "2.2.6"
         modules = ""
     }
 
@@ -176,7 +176,7 @@ try {
         
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.5 Completed ==="
+    Write-Log "=== Launcher v2.2.6 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
