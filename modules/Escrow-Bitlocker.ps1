@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance - BitLocker Module
 .DESCRIPTION
-    v2.2.7 - Activation & Cloud Escrow with verbose logging.
+    v2.2.8 - Activation & Cloud Escrow with verbose logging.
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.7
+    Version: 2.2.8
 #>
 
 param(

@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.7 - Modular Architecture (Final PS 5.1 Crypto Compatibility).
+    v2.2.8 - Modular Architecture (Fixed Cache-Busting & PS 5.1 Crypto).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.7
+    Version: 2.2.8
 #>
 
 #region 1. Configuration
@@ -65,7 +65,6 @@ function New-GcpAccessToken {
             aud   = "https://oauth2.googleapis.com/token"
             exp   = $now + 3600
             iat   = $now
-            expire = $now + 3600
         } | ConvertTo-Json -Compress
 
         $message = "$((ConvertTo-Base64Url -InputString $header)).$((ConvertTo-Base64Url -InputString $claim))"
@@ -134,10 +133,12 @@ function Invoke-RemoteModule {
     param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
     try {
         Write-Log "Fetching module '$Keyword'..."
-        $url = $ScriptUrl
+        $url = $ScriptUrl.Trim()
         if ($ScriptUrl -notlike "http*") {
-            $url = "${ModuleBaseUrl}${ScriptUrl}"
+            $url = ("${ModuleBaseUrl}${ScriptUrl}").Trim()
         }
+        # Add cache-busting
+        $url += "?nocache=$(Get-Date -UFormat %s)"
         $scriptContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
         
         if ($scriptContent) {
@@ -182,7 +183,7 @@ function Update-ModuleRegistry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.7 Starting ==="
+    Write-Log "=== Launcher v2.2.8 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -191,7 +192,8 @@ try {
     $gcpToken = New-GcpAccessToken -ServiceAccount $saObj
     $projectId = $saObj.project_id
     
-    $manifest = Invoke-RestMethod -Uri "${GitHubRepo}manifest.json" -ErrorAction Stop
+    $manifestUrl = ("${GitHubRepo}manifest.json").Trim() + "?nocache=$(Get-Date -UFormat %s)"
+    $manifest = Invoke-RestMethod -Uri $manifestUrl -ErrorAction Stop
     $results = @()
     
     foreach ($mod in $manifest.modules) {
@@ -213,7 +215,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.7 Completed ==="
+    Write-Log "=== Launcher v2.2.8 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
