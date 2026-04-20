@@ -2,9 +2,9 @@ param(
     [hashtable]$Context
 )
 
-#region Logic Hijack from Core-Ops
+# 1. Configurazione Iniziale
 $LogPath = $Context.LogPath
-$MinProfileAgeDays = if($Context.minProfileAgeDays){ $Context.minProfileAgeDays } else { 1 }
+$MinProfileAgeDays = if ($Context.minProfileAgeDays) { $Context.minProfileAgeDays } else { 1 }
 
 function Write-ModuleLog {
     param([string]$Message, [string]$Level = "INFO")
