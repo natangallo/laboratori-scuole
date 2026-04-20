@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance - BitLocker Module
 .DESCRIPTION
-    v2.2.8 - Activation & Cloud Escrow with verbose logging.
+    v2.2.9 - Activation & Cloud Escrow with Auto-Healing (0x803100ee fix).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.8
+    Version: 2.2.9
 #>
 
 param(
@@ -80,7 +80,7 @@ Add-Type -AssemblyName System.Windows.Forms
 `$title = "Protezione Disco Attivata"
 `$res = [System.Windows.Forms.MessageBox]::Show(`$msg, `$title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
 if (`$res -eq [System.Windows.Forms.DialogResult]::Yes) {
-    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza del sistema. Salva il tuo lavoro." /f
+    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza des sistema. Salva il tuo lavoro." /f
 }
 Unregister-ScheduledTask -TaskName "RekordataBitLockerUI" -Confirm:`$false -ErrorAction SilentlyContinue
 Remove-Item -Path `$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
@@ -106,12 +106,25 @@ function Invoke-BitLockerActivation {
     param([string]$EncryptionMethod = "xts_aes256")
     try {
         $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
-        if ($vol.ProtectionStatus -eq "On") { return @{ Success = $true; StatusNote = "already_active" } }
+        
+        # Check if RecoveryPassword already exists
+        $hasRecovery = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+        if ($vol.ProtectionStatus -eq "On" -and $hasRecovery) { 
+            return @{ Success = $true; StatusNote = "already_active" } 
+        }
         
         Write-ModuleLog "Activating BitLocker (Method: $EncryptionMethod)..."
         
         # 1. Add Protectors (TPM + RecoveryPassword)
         $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
+        
+        # Check for error 0x803100ee (Max recovery passwords reached)
+        if ($LASTEXITCODE -ne 0 -and ($pOutput -match "0x803100ee" -or $pOutput -match "numero massimo")) {
+            Write-ModuleLog "Max recovery passwords reached. Purging old ones..." "WARNING"
+            & manage-bde -protectors -delete $env:SystemDrive -type RecoveryPassword | Out-Null
+            $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
+        }
+
         if ($LASTEXITCODE -ne 0) {
              Write-ModuleLog "Failed to add protectors: $($pOutput -join ' | ')" "ERROR"
              return @{ Success = $false; StatusNote = "protector_failed"; Output = ($pOutput -join ' | ') }
