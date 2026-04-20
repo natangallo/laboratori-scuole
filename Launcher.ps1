@@ -2,7 +2,7 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.3 - Modular Architecture (DEBUG AUTH 5.1).
+    v2.2.4 - Modular Architecture (Auth Form-Encoded Fix).
     This script is the central orchestrator (Plumbing) for Windows Governance.
     - Executed in-memory by the Bootstrap-Agent.
     - Handles JWT Exchange for Google Cloud.
@@ -10,7 +10,7 @@
     - Fetches and executes operational modules (manifest-driven).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.3
+    Version: 2.2.4
 #>
 
 #region 1. Configuration
@@ -84,10 +84,14 @@ function New-GcpAccessToken {
         $signatureBytes = $rsaCng.SignHash($hash, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
         $jwt = "$message.$([Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_'))"
 
-        $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" -Method Post -Body @{
-            grant_type = "urn:ietf:params:oauth-grant-type:jwt-bearer"
-            assertion  = $jwt
-        }
+        # Construct body as a raw string for PS 5.1 compatibility
+        $grantType = "urn:ietf:params:oauth-grant-type:jwt-bearer"
+        $body = "grant_type=$($grantType)&assertion=$($jwt)"
+        
+        $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" `
+            -Method Post `
+            -ContentType "application/x-www-form-urlencoded" `
+            -Body $body
         return $tokenResponse.access_token
     }
     catch {
@@ -181,8 +185,7 @@ function Update-ModuleRegistry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "DEBUG: ENGINE v2.2.3 LOADING"
-    Write-Log "=== Launcher v2.2.3 Starting ==="
+    Write-Log "=== Launcher v2.2.4 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -213,7 +216,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.2 Completed ==="
+    Write-Log "=== Launcher v2.2.4 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"

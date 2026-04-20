@@ -99,15 +99,29 @@ function Invoke-BitLockerActivation {
         if ($vol.ProtectionStatus -eq "On") { return @{ Success = $true; StatusNote = "already_active" } }
         
         Write-ModuleLog "Activating BitLocker (Method: $EncryptionMethod)..."
-        manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword | Out-Null
+        
+        # 1. Add Protectors (TPM + RecoveryPassword)
+        $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
+        if ($LASTEXITCODE -ne 0) {
+             Write-ModuleLog "Failed to add protectors: $($pOutput -join ' | ')" "ERROR"
+             return @{ Success = $false; StatusNote = "protector_failed" }
+        }
+
+        # 2. Start Encryption
         $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest", "-Used")
-        $output = manage-bde.exe @cmdArgs
-        if ($LASTEXITCODE -eq 0) { 
+        $output = & manage-bde.exe @cmdArgs 2>&1
+        
+        if ($LASTEXITCODE -eq 0 -or $output -match "already encrypted" -or $output -match "encryption is in progress") { 
             Invoke-PremiumNotification
             return @{ Success = $true; StatusNote = "activated" } 
         }
+        
+        Write-ModuleLog "Activation failed: $($output -join ' | ')" "ERROR"
         return @{ Success = $false; StatusNote = "error" }
-    } catch { return @{ Success = $false; StatusNote = "failed" } }
+    } catch { 
+        Write-ModuleLog "Fatal Activation Error: $_" "ERROR"
+        return @{ Success = $false; StatusNote = "failed" } 
+    }
 }
 #endregion
 
