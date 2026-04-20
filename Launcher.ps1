@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.3.0 - Modular Architecture (Nanoseconds Cache-Busting).
+    v2.3.1 - Modular Architecture (Disk-Temporary execution).
 .NOTES
     Author: Rekordata Team
-    Version: 2.3.0
+    Version: 2.3.1
 #>
 
 #region 1. Configuration
@@ -111,6 +111,7 @@ function Send-Telemetry {
 #region 3. Execution Engine
 function Invoke-RemoteModule {
     param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
+    $tempModPath = Join-Path $env:TEMP "Mod-${Keyword}.ps1"
     try {
         Write-Log "Fetching module '${Keyword}'..."
         $url = $ScriptUrl.Trim()
@@ -119,12 +120,14 @@ function Invoke-RemoteModule {
         }
         # Add aggressive cache-busting (nanoseconds ticks)
         $cacheBuster = [DateTime]::UtcNow.Ticks
-        $scriptContent = Invoke-RestMethod -Uri "$url?nocache=$cacheBuster" -Headers $GlobalHeaders -ErrorAction Stop
+        $urlWithCache = "$url?nocache=$cacheBuster"
         
-        if ($scriptContent) {
-            Write-Log "Executing ${Keyword} in-memory..."
-            $scriptBlock = [scriptblock]::Create($scriptContent)
-            $result = Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $Context
+        # Disk-based execution for robustness
+        Invoke-WebRequest -Uri $urlWithCache -Headers $GlobalHeaders -OutFile $tempModPath -ErrorAction Stop
+        
+        if (Test-Path $tempModPath) {
+            Write-Log "Executing ${Keyword} from disk (temp)..."
+            $result = & $tempModPath $Context
             
             if ($result -is [PSCustomObject]) {
                 return $result
@@ -136,6 +139,9 @@ function Invoke-RemoteModule {
     catch {
         Write-Log "Module ${Keyword} failed: $_" "ERROR"
         return [PSCustomObject]@{ Module=$Keyword; Success=$false; Status="Error"; Details=@{ Error=$_.ToString() } }
+    }
+    finally {
+        if (Test-Path $tempModPath) { Remove-Item $tempModPath -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -160,7 +166,7 @@ function Update-ModuleRegistry {
 
 # region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.3.0 Starting ==="
+    Write-Log "=== Launcher v2.3.1 Starting (Disk-Mode) ==="
 
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -197,7 +203,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.3.0 Completed ==="
+    Write-Log "=== Launcher v2.3.1 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
