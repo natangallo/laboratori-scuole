@@ -145,7 +145,7 @@ function Invoke-BitLockerActivation {
             return @{ Success = $true; StatusNote = "activated" }
         } else {
             Write-ModuleLog "Errore manage-bde ($exitCode): $($output -join ' | ')" "ERROR"
-            return @{ Success = $false; StatusNote = "activation_error", Output = ($output -join ' | ') }
+            return @{ Success = $false; StatusNote = "activation_error"; Output = ($output -join ' | ') }
         }
     } catch { 
         Write-ModuleLog "Fatal Activation Error: $_" "ERROR"
