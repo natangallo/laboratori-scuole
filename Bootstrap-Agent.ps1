@@ -106,12 +106,12 @@ try {
     # 1. Download Launcher in-memory
     Write-BootstrapLog "Fetching Launcher from $LauncherUrl..."
     
-    # Cache busting to avoid GitHub Raw cache (aggressive headers + timestamp)
+    # Cache busting to avoid GitHub Raw cache (aggressive headers + nano-timestamp)
     $headers = @{
         "Cache-Control" = "no-cache"
         "Pragma"        = "no-cache"
     }
-    $cacheBuster = Get-Date -Format "yyyyMMddHHmmss"
+    $cacheBuster = [DateTime]::UtcNow.Ticks
     $urlWithCache = "$($LauncherUrl.Trim())?nocache=$cacheBuster"
     
     $launcherCode = Invoke-RestMethod -Uri $urlWithCache -Headers $headers -ErrorAction Stop
