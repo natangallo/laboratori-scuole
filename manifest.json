@@ -30,7 +30,7 @@
       "dependsOn": [],
       "description": "BitLocker activation and Cloud Drive escrow",
       "config": {
-        "folderId": "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A",
+        "BitlockerFolderId": "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A",
         "usedSpaceOnly": true
       }
     }

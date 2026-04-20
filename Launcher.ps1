@@ -205,7 +205,11 @@ try {
     foreach ($mod in $manifest.modules) {
         if ($mod.enabled -and -not (Test-ModuleCooldown -Mod $mod)) {
             $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$RegistryPath; LogPath=$LogPath }
-            if ($mod.config) { foreach ($p in $mod.config.psobject.properties.Name) { $ctx[$p] = $mod.config.$p } }
+            if ($mod.config) { 
+                foreach ($prop in $mod.config.psobject.Properties) { 
+                    $ctx[$prop.Name] = $prop.Value 
+                } 
+            }
             
             $res = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $ctx
             $results += $res

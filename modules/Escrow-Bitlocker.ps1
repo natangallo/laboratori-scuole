@@ -16,7 +16,7 @@ param(
 $LogPath = $Context.LogPath
 $AccessToken = $Context.AccessToken
 $RegistryPath = $Context.RegistryPath
-$BitlockerFolderId = $Context.folderId
+$BitlockerFolderId = $Context.BitlockerFolderId
 $BitlockerUsedSpaceOnly = $true
 if ($null -ne $Context.usedSpaceOnly) { $BitlockerUsedSpaceOnly = $Context.usedSpaceOnly }
 
@@ -96,6 +96,7 @@ function Get-BitLockerMDMPolicy {
     $fvePath = "HKLM:\SOFTWARE\Policies\Microsoft\FVE"
     if (-not (Test-Path $fvePath)) { return @{ PolicyPresent = $false } }
     $rawMethod = (Get-ItemProperty -Path $fvePath -ErrorAction SilentlyContinue).EncryptionMethodWithXtsOs
+    
     $methodMap = @{ 3 = "aes128"; 4 = "aes256"; 6 = "xts_aes128"; 7 = "xts_aes256" }
     $encryptionMethod = "xts_aes256"
     if($methodMap.ContainsKey([int]$rawMethod)){ $encryptionMethod = $methodMap[[int]$rawMethod] }
@@ -106,18 +107,18 @@ function Invoke-BitLockerActivation {
     param([string]$EncryptionMethod = "xts_aes256")
     try {
         $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
-        
+
         # Check if RecoveryPassword already exists
         $hasRecovery = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
         if ($vol.ProtectionStatus -eq "On" -and $hasRecovery) { 
             return @{ Success = $true; StatusNote = "already_active" } 
         }
-        
+
         Write-ModuleLog "Activating BitLocker (Method: $EncryptionMethod)..."
-        
+
         # 1. Add Protectors (TPM + RecoveryPassword)
         $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
-        
+
         # Check for error 0x803100ee (Max recovery passwords reached)
         if ($LASTEXITCODE -ne 0 -and ($pOutput -match "0x803100ee" -or $pOutput -match "numero massimo")) {
             Write-ModuleLog "Max recovery passwords reached. Purging old ones..." "WARNING"
@@ -133,12 +134,12 @@ function Invoke-BitLockerActivation {
         # 2. Start Encryption
         $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest", "-Used")
         $output = & manage-bde.exe @cmdArgs 2>&1
-        
+
         if ($LASTEXITCODE -eq 0 -or $output -match "already encrypted" -or $output -match "encryption is in progress") { 
             Invoke-PremiumNotification
             return @{ Success = $true; StatusNote = "activated" } 
         }
-        
+
         Write-ModuleLog "Activation failed: $($output -join ' | ')" "ERROR"
         return @{ Success = $false; StatusNote = "error"; Output = ($output -join ' | ') }
     } catch { 
@@ -146,9 +147,8 @@ function Invoke-BitLockerActivation {
         return @{ Success = $false; StatusNote = "failed" } 
     }
 }
-#endregion
 
-#region Execution
+# region Execution
 Write-ModuleLog "Checking BitLocker Governance..."
 $mdmPolicy = Get-BitLockerMDMPolicy
 if (-not $mdmPolicy.PolicyPresent) {
@@ -161,7 +161,7 @@ if ($activation.Success) {
     Write-ModuleLog "BitLocker State OK ($($activation.StatusNote)). Processing Escrow..."
     $blVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive
     $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
-    
+
     if ($recoveryProtector) {
         $id = $recoveryProtector.KeyProtectorId
         $lastSyncId = Get-RegistryValueSecure -Path $RegistryPath -Name "LastBitLockerSyncId"
@@ -171,7 +171,7 @@ if ($activation.Success) {
             $serial = (Get-CimInstance Win32_Bios).SerialNumber
             $content = "Hostname: $($env:COMPUTERNAME)`nSerial: $serial`nDisk: C:`nID: $id`nKey: $($recoveryProtector.RecoveryPassword)"
             $fileName = "$($env:COMPUTERNAME)_C_BitLocker.txt"
-            
+
             if (Send-DriveUploadMultipart -FileName $fileName -Content $content -FolderId $BitlockerFolderId -AccessToken $AccessToken) {
                 Write-ModuleLog "Escrow successful."
                 New-ItemProperty -Path $RegistryPath -Name "LastBitLockerSyncId" -Value $id -PropertyType String -Force | Out-Null
@@ -193,7 +193,6 @@ $syncStatus = "none"
 if ($id -and $id -eq $lastSyncId) { $syncStatus = "already_synced" }
 elseif ($id) { $syncStatus = "uploaded" }
 
-# Return ResultObject to Launcher
 return [PSCustomObject]@{
     Module  = "bitlocker-escrow"
     Success = $finalSuccess
@@ -204,4 +203,3 @@ return [PSCustomObject]@{
         synced           = $syncStatus
     }
 }
-#endregion
