@@ -2,91 +2,73 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.4 - Modular Architecture (Auth Form-Encoded Fix).
-    This script is the central orchestrator (Plumbing) for Windows Governance.
-    - Executed in-memory by the Bootstrap-Agent.
-    - Handles JWT Exchange for Google Cloud.
-    - Manages shared Telemetry (Firestore).
-    - Fetches and executes operational modules (manifest-driven).
+    v2.2.5 - Modular Architecture (Final Auth & BDE Debug).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.4
+    Version: 2.2.5
 #>
 
-#region 1. Configuration
-$BaseDir = "C:\ProgramData\Rekordata"
-$LogPath = Join-Path $BaseDir "Logs"
-$RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
-$MDMAuthValue = "MDMAuth"
-# Base URL reflects the vertical folder structure for Windows
-$GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
-$ModuleBaseUrl = $GitHubRepo # Modules will be fetched relative to this (e.g., modules/Script.ps1)
-#endregion
-
-#region 2. Plumbing Functions
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+#region 1. Internal Logging & TLS
+$LogPath = "C:\ProgramData\Rekordata\Logs\Governance.log"
+if (-not (Test-Path "C:\ProgramData\Rekordata\Logs")) { New-Item -Path "C:\ProgramData\Rekordata\Logs" -ItemType Directory -Force | Out-Null }
 
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] [$Level] [Launcher] $Message"
-    if (-not (Test-Path $LogPath)) { try { New-Item -ItemType Directory -Path $LogPath -Force | Out-Null } catch {} }
-    Add-Content -Path (Join-Path $LogPath "Governance.log") -Value $logEntry
-    Write-Host $logEntry
+    $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $Line = "[$Stamp] [$Level] [Launcher] $Message"
+    Add-Content -Path $LogPath -Value $Line
+    Write-Host $Line
 }
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+#region 2. Crypto & Auth (GCP JWT)
+$RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
+$MDMAuthValue = "MDMAuth"
 
 function Get-RegistryValueSecure {
-    param([string]$Path, [string]$Name)
-    try {
-        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
-        $subKeyPath = $Path.Replace("HKLM:\", "").Replace("HKEY_LOCAL_MACHINE\", "")
-        $subKey = $baseKey.OpenSubKey($subKeyPath)
-        if ($subKey) {
-            $value = $subKey.GetValue($Name)
-            $subKey.Close(); $baseKey.Close()
-            return $value
-        }
-        $baseKey.Close(); return $null
-    } catch { return $null }
-}
-
-function ConvertTo-Base64Url {
-    param([string]$InputString)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
-    return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    param($Path, $Name)
+    try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name }
+    catch { return $null }
 }
 
 function New-GcpAccessToken {
-    param([object]$ServiceAccount)
+    param([string]$B64Json)
     try {
-        $header = @{ alg = "RS256"; typ = "JWT" } | ConvertTo-Json -Compress
-        
-        # Safe epoch calculation for PS 5.1
-        $epoch = [datetime]"1970-01-01 00:00:00"
-        $now = [int][timespan]::FromTicks((Get-Date).ToUniversalTime().Ticks - $epoch.Ticks).TotalSeconds
-        $claim = @{
-            iss   = $ServiceAccount.client_email
-            scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/drive"
+        $Auth = $B64Json | ConvertFrom-Json
+        if (-not $Auth.client_email -or -not $Auth.private_key) { throw "Invalid Auth JSON" }
+
+        # Header
+        $Header = @{ alg = "RS256"; typ = "JWT" }
+        $HeaderB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($Header | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+
+        # Claim
+        $Now = [Math]::Floor([decimal](Get-Date -UFormat %s))
+        $Claim = @{
+            iss   = $Auth.client_email
+            scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/logging.write"
             aud   = "https://oauth2.googleapis.com/token"
-            exp   = $now + 3600
-            iat   = $now
-        } | ConvertTo-Json -Compress
+            iat   = $Now
+            exp   = $Now + 3600
+        }
+        $ClaimB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($Claim | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 
-        $message = "$((ConvertTo-Base64Url -InputString $header)).$((ConvertTo-Base64Url -InputString $claim))"
-        $privateKeyPem = $ServiceAccount.private_key.Replace("-----BEGIN PRIVATE KEY-----", "").Replace("-----END PRIVATE KEY-----", "").Replace("`n", "").Replace("`r", "").Trim()
-        $keyBytes = [Convert]::FromBase64String($privateKeyPem)
-
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $hash = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($message))
-        $cngKey = [System.Security.Cryptography.CngKey]::Import($keyBytes, [System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob)
-        $rsaCng = New-Object System.Security.Cryptography.RSACng($cngKey)
+        # Sign
+        $message = "$HeaderB64.$ClaimB64"
+        $privateKey = $Auth.private_key -replace "-----BEGIN PRIVATE KEY-----", "" -replace "-----END PRIVATE KEY-----", "" -replace "\s", ""
+        $privateKeyBytes = [Convert]::FromBase64String($privateKey)
         
+        $rsaCng = New-Object System.Security.Cryptography.RSACng
+        $rsaCng.ImportPkcs8PrivateKey($privateKeyBytes, [out]$null)
+        
+        $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($message))
         $signatureBytes = $rsaCng.SignHash($hash, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
         $jwt = "$message.$([Convert]::ToBase64String($signatureBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_'))"
 
-        # Construct body as a raw string for PS 5.1 compatibility
-        $grantType = "urn:ietf:params:oauth-grant-type:jwt-bearer"
-        $body = "grant_type=$($grantType)&assertion=$($jwt)"
+        # Fix: PS 5.1 might send colons raw. Google expects them URL-encoded.
+        # Hardcoding the encoded version of "urn:ietf:params:oauth-grant-type:jwt-bearer"
+        $encodedGrant = "urn%3Aietf%3Aparams%3Aoauth-grant-type%3Ajwt-bearer"
+        $body = "grant_type=$($encodedGrant)&assertion=$($jwt)"
         
         $tokenResponse = Invoke-RestMethod -Uri "https://oauth2.googleapis.com/token" `
             -Method Post `
@@ -97,126 +79,104 @@ function New-GcpAccessToken {
     catch {
         $errorMessage = $_.ToString()
         $bodyError = ""
-        try {
-            if ($_.Exception.Response) {
-                $stream = $_.Exception.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($stream)
-                $bodyError = $reader.ReadToEnd()
-            }
-        } catch { $bodyError = "Could not read error body: $_" }
-        
+        if ($_.Exception -and $_.Exception.Response) {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $bodyError = $reader.ReadToEnd()
+        }
         Write-Log "GCP Token Exchange Failed: $errorMessage | Body: $bodyError" "ERROR"
-        return $null 
+        return $null
     }
 }
 
+#region 3. Telemetry (Firestore Minimal)
 function Send-Telemetry {
-    param([hashtable]$Data, [string]$AccessToken, [string]$ProjectId)
+    param([string]$AccessToken, [string]$ProjectId, [hashtable]$Data)
     try {
+        $Id = $env:COMPUTERNAME
+        $Url = "https://firestore.googleapis.com/v1/projects/$ProjectId/databases/(default)/documents/telemetry/$Id"
+        
+        # Convert simple hashtable to Firestore fields
         $fields = @{}
         foreach ($key in $Data.Keys) {
             $val = $Data[$key]
-            if ($val -is [int]) { $fields[$key] = @{ integerValue = $val } }
-            elseif ($val -is [bool]) { $fields[$key] = @{ booleanValue = $val } }
-            elseif ($key -eq "timestamp") { $fields[$key] = @{ timestampValue = $val } }
-            elseif ($val -is [hashtable] -or $val -is [array] -or $val -is [PSCustomObject]) {
-                $fields[$key] = @{ stringValue = ($val | ConvertTo-Json -Compress -Depth 10) }
-            }
-            else { $fields[$key] = @{ stringValue = [string]$val } }
+            if ($val -is [bool]) { $fields[$key] = @{ booleanValue = $val } }
+            elseif ($val -match '^\d+$') { $fields[$key] = @{ integerValue = $val } }
+            else { $fields[$key] = @{ stringValue = $val.ToString() } }
         }
-        $body = @{ fields = $fields } | ConvertTo-Json -Depth 5
-        $uri = "https://firestore.googleapis.com/v1/projects/$ProjectId/databases/(default)/documents/telemetry"
-        Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" } -Body $body | Out-Null
-        return $true
-    } catch { return $false }
-}
-#endregion
-
-#region 3. Execution Engine
-function Invoke-RemoteModule {
-    param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
-    try {
-        Write-Log "Fetching module '$Keyword'..."
-        $url = $ScriptUrl
-        if ($ScriptUrl -notlike "http*") {
-            $url = "${ModuleBaseUrl}${ScriptUrl}"
-        }
-        $scriptContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
         
-        if ($scriptContent) {
-            Write-Log "Executing $Keyword in-memory..."
-            $scriptBlock = [scriptblock]::Create($scriptContent)
-            $result = Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $Context
-            
-            if ($result -is [PSCustomObject]) {
-                return $result
-            } else {
-                return [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" }
-            }
-        }
+        $Payload = @{ fields = $fields } | ConvertTo-Json -Depth 10
+        $Headers = @{ Authorization = "Bearer $AccessToken" }
+        
+        return Invoke-RestMethod -Uri $Url -Method Patch -Headers $Headers -ContentType "application/json" -Body $Payload
     }
     catch {
-        Write-Log "Module $Keyword failed: $_" "ERROR"
-        return [PSCustomObject]@{ Module=$Keyword; Success=$false; Status="Error"; Details=@{ Error=$_.ToString() } }
+        Write-Log "Telemetry Sync Failed: $_" "WARNING"
     }
 }
-
-function Test-ModuleCooldown {
-    param($Mod)
-    if ($Mod.forceRun) { return $false }
-    $lastRun = Get-RegistryValueSecure -Path "$RegistryPath\Modules\$($Mod.keyword)" -Name "LastRunSuccess"
-    if (-not $lastRun) { return $false }
-    try {
-        $diff = (Get-Date) - [DateTime]::Parse($lastRun)
-        $limit = 24
-        if ($Mod.intervalHours) { $limit = $Mod.intervalHours }
-        return ($diff.TotalHours -lt $limit)
-    } catch { return $false }
-}
-
-function Update-ModuleRegistry {
-    param($Keyword, $Success)
-    $reg = "$RegistryPath\Modules\$Keyword"
-    if (-not (Test-Path $reg)) { New-Item -Path $reg -Force | Out-Null }
-    New-ItemProperty -Path $reg -Name "LastRun" -Value (Get-Date).ToString("o") -PropertyType String -Force | Out-Null
-    if ($Success) { New-ItemProperty -Path $reg -Name "LastRunSuccess" -Value (Get-Date).ToString("o") -PropertyType String -Force | Out-Null }
-}
-#endregion
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.4 Starting ==="
+    Write-Log "=== Launcher v2.2.5 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
+    
+    $authJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64Token))
+    $projectId = ($authJson | ConvertFrom-Json).project_id
+    
+    Write-Log "Exchanging JWT for Google Access Token..."
+    $gcpToken = New-GcpAccessToken -B64Json $authJson
+    
+    if (-not $gcpToken) {
+        Write-Log "Execution halted: Could not obtain GCP Token." "ERROR"
+        exit 1
+    }
 
-    $saObj = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Token)) | ConvertFrom-Json
-    $gcpToken = New-GcpAccessToken -ServiceAccount $saObj
-    $projectId = $saObj.project_id
+    # Fetch Manifest (Modules to run)
+    $GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
+    $ManifestUrl = "$GitHubRepo" + "manifest.json?nocache=" + (Get-Date -UFormat %s)
     
-    $manifest = Invoke-RestMethod -Uri "${GitHubRepo}manifest.json" -ErrorAction Stop
-    $results = @()
+    Write-Log "Fetching Manifest..."
+    $manifest = Invoke-RestMethod -Uri $ManifestUrl
     
+    $payload = @{
+        last_run = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        version = "2.2.5"
+        modules = ""
+    }
+
     foreach ($mod in $manifest.modules) {
-        if ($mod.enabled -and -not (Test-ModuleCooldown -Mod $mod)) {
-            $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$RegistryPath; LogPath=$LogPath }
-            if ($mod.config) { foreach ($p in $mod.config.psobject.properties.Name) { $ctx[$p] = $mod.config.$p } }
+        if ($mod.enabled) {
+            Write-Log "Fetching module '$($mod.name)'..."
+            $modContent = Invoke-RestMethod -Uri "$GitHubRepo$($mod.path)?nocache=$(Get-Date -UFormat %s)"
+            Write-Log "Executing $($mod.name) in-memory..."
             
-            $res = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $ctx
-            $results += $res
-            Update-ModuleRegistry -Keyword $mod.keyword -Success $res.Success
+            # Pass common context (Token, ProjectId)
+            $context = @{
+                AccessToken = $gcpToken
+                ProjectId   = $projectId
+            }
+            
+            Invoke-Expression $modContent
+            $payload.modules += "$($mod.name):OK; "
+        }
+        else {
+            Write-Log "Module '$($mod.name)' disabled."
         }
     }
 
-    if ($gcpToken -and $results.Count -gt 0) {
-        $payload = @{
-            deviceId = $env:COMPUTERNAME; timestamp=(Get-Date).ToString("o")
-            summary = @{ total=$results.Count; success=($results | Where-Object { $_.Success }).Count }
-            details = $results
-        }
+    if ($gcpToken) {
+        Write-Log "Syncing Telemetry to Firestore..."
+        # Add basic hardware info
+        $cs = Get-CimInstance Win32_ComputerSystem
+        $os = Get-CimInstance Win32_OperatingSystem
+        $payload.model = $cs.Model
+        $payload.os = $os.Caption
+        $payload.ram = [math]::Round($cs.TotalPhysicalMemory / 1GB, 0).ToString() + "GB"
+        
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.4 Completed ==="
+    Write-Log "=== Launcher v2.2.5 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
