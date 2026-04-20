@@ -2,7 +2,7 @@
 .SYNOPSIS
     Rekordata Windows Governance - BitLocker Module
 .DESCRIPTION
-    v2.2.9 - Activation & Cloud Escrow with Auto-Healing (0x803100ee & 0x80310031 fix).
+    v2.2.9 - Activation & Cloud Escrow. Restored Core-Ops DNA for protector handling.
 .NOTES
     Author: Rekordata Team
     Version: 2.2.9
@@ -46,6 +46,7 @@ function Write-ModuleLog {
 function Get-RegistryValueSecure {
     param([string]$Path, [string]$Name)
     try {
+        # Usa .NET per bypassare la redirection del registro
         $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
         $subKeyPath = $Path.Replace("HKLM:\", "").Replace("HKEY_LOCAL_MACHINE\", "")
         $subKey = $baseKey.OpenSubKey($subKeyPath)
@@ -106,49 +107,49 @@ function Invoke-BitLockerActivation {
     param([string]$EncryptionMethod = "xts_aes256")
     try {
         $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
-        
-        # Check if RecoveryPassword already exists
-        $hasRecovery = $vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
-        if ($vol.ProtectionStatus -eq "On" -and $hasRecovery) { 
-            return @{ Success = $true; StatusNote = "already_active" } 
-        }
-        
-        Write-ModuleLog "Activating BitLocker (Method: $EncryptionMethod)..."
-        
-        # 1. Add Protectors (TPM + RecoveryPassword)
-        $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
-        $isDuplicate = $pOutput -match "0x80310031"
-        
-        # Check for error 0x803100ee (Max recovery passwords reached)
-        if ($LASTEXITCODE -ne 0 -and -not $isDuplicate) {
-            if ($pOutput -match "0x803100ee" -or $pOutput -match "numero massimo") {
-                Write-ModuleLog "Max recovery passwords reached. Purging old ones..." "WARNING"
-                & manage-bde -protectors -delete $env:SystemDrive -type RecoveryPassword | Out-Null
-                $pOutput = & manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword 2>&1
+
+        # 1. CASO: GIÀ ATTIVO
+        if ($vol.ProtectionStatus -eq "On") {
+            Write-ModuleLog "BitLocker già attivo."
+            if (-not ($vol.KeyProtector | Where-Object {$_.KeyProtectorType -eq 'RecoveryPassword'})) {
+                Write-ModuleLog "Chiave di ripristino assente. Aggiunta in corso..."
+                manage-bde -protectors -add $env:SystemDrive -RecoveryPassword | Out-Null
+                return @{ Success = $true; StatusNote = "protector_added" }
+            } else {
+                return @{ Success = $true; StatusNote = "already_active" }
             }
         }
 
-        # If it was a duplicate or max-purge succeeded, we are good to go
-        if ($LASTEXITCODE -ne 0 -and -not $isDuplicate) {
-             Write-ModuleLog "Failed to add protectors: $($pOutput -join ' | ')" "ERROR"
-             return @{ Success = $false; StatusNote = "protector_failed"; Output = ($pOutput -join ' | ') }
-        }
+        # 2. CASO: DISATTIVATO (Attivazione Silente)
+        Write-ModuleLog "Avvio attivazione silente via manage-bde (UsedSpaceOnly=$BitlockerUsedSpaceOnly)..."
         
-        if ($isDuplicate) {
-            Write-ModuleLog "Numerical protector already exists (0x80310031). Using existing one."
+        # Gestione TPM: Aggiungi solo se manca
+        if (-not ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'Tpm' })) {
+            Write-ModuleLog "Aggiunta protettore TPM..."
+            manage-bde -protectors -add $env:SystemDrive -tpm | Out-Null
         }
 
-        # 2. Start Encryption
-        $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest", "-Used")
-        $output = & manage-bde.exe @cmdArgs 2>&1
-        
-        if ($LASTEXITCODE -eq 0 -or $output -match "already encrypted" -or $output -match "encryption is in progress") { 
-            Invoke-PremiumNotification
-            return @{ Success = $true; StatusNote = "activated" } 
+        # Gestione Recovery Password: Aggiungi solo se manca
+        if (-not ($vol.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })) {
+            Write-ModuleLog "Aggiunta chiave di ripristino..."
+            manage-bde -protectors -add $env:SystemDrive -RecoveryPassword | Out-Null
         }
-        
-        Write-ModuleLog "Activation failed: $($output -join ' | ')" "ERROR"
-        return @{ Success = $false; StatusNote = "error"; Output = ($output -join ' | ') }
+
+        # Commando di attivazione finale con SkipHardwareTest (attivazione LIVE)
+        $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest")
+        if ($BitlockerUsedSpaceOnly) { $cmdArgs += "-Used" }
+
+        $output = & manage-bde.exe @cmdArgs 2>&1
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -eq 0 -or $output -match "already encrypted" -or $output -match "encryption is in progress") {
+            Write-ModuleLog "BitLocker attivato correttamente."
+            Invoke-PremiumNotification
+            return @{ Success = $true; StatusNote = "activated" }
+        } else {
+            Write-ModuleLog "Errore manage-bde ($exitCode): $($output -join ' | ')" "ERROR"
+            return @{ Success = $false; StatusNote = "activation_error"; Output = ($output -join ' | ') }
+        }
     } catch { 
         Write-ModuleLog "Fatal Activation Error: $_" "ERROR"
         return @{ Success = $false; StatusNote = "failed" } 
@@ -192,24 +193,14 @@ if ($activation.Success) {
     Write-ModuleLog "Activation step failed. Detail: $($activation.Output)" "ERROR"
 }
 
-# Prepare return object
-$finalSuccess = [bool]$activation.Success
-$finalStatus = "Failed"
-if ($finalSuccess) { $finalStatus = "Completed" }
-
-$syncStatus = "none"
-if ($id -and $id -eq $lastSyncId) { $syncStatus = "already_synced" }
-elseif ($id) { $syncStatus = "uploaded" }
-
 # Return ResultObject to Launcher
 return [PSCustomObject]@{
     Module  = "bitlocker-escrow"
-    Success = $finalSuccess
-    Status  = $finalStatus
+    Success = $activation.Success
+    Status  = "Completed"
     Details = @{
         activationStatus = $activation.StatusNote
         policyPresent    = $mdmPolicy.PolicyPresent
-        synced           = $syncStatus
     }
 }
 #endregion
