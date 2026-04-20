@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance - BitLocker Module
 .DESCRIPTION
-    v2.2.9 - Activation & Cloud Escrow. Restored Core-Ops DNA for protector handling.
+    v2.3.0 - Zero-Cache Production (Core-Ops DNA).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.9
+    Version: 2.3.0
 #>
 
 param(

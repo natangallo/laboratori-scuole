@@ -1,34 +1,16 @@
 {
-  "version": "2.2.9",
+  "version": "2.3.0",
   "generatedAt": "2026-04-20",
   "launcher": {
     "scriptUrl": "Launcher.ps1",
-    "hash": ""
+    "cooldownMinutes": 10
   },
   "modules": [
     {
-      "keyword": "profile-cleanup",
-      "scriptUrl": "modules/Cleanup-Profiles.ps1",
-      "type": "scheduled",
-      "intervalHours": 24,
-      "timeoutSeconds": 180,
-      "enabled": true,
-      "forceRun": false,
-      "dependsOn": [],
-      "description": "Atomic CIM-based user profile deletion",
-      "config": {
-        "minProfileAgeDays": 1
-      }
-    },
-    {
       "keyword": "bitlocker-escrow",
       "scriptUrl": "modules/Escrow-Bitlocker.ps1",
-      "type": "oneshot",
-      "timeoutSeconds": 300,
       "enabled": true,
-      "forceRun": true,
-      "dependsOn": [],
-      "description": "BitLocker activation and Cloud Drive escrow",
+      "cooldownMinutes": 60,
       "config": {
         "BitlockerFolderId": "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A",
         "usedSpaceOnly": true
