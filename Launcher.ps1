@@ -17,6 +17,7 @@ $BaseDir = "C:\ProgramData\Rekordata"
 $LogPath = Join-Path $BaseDir "Logs"
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
+$ModuleBaseUrl = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/modules/"
 $GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
 #endregion
 
@@ -43,7 +44,8 @@ function Get-RegistryValueSecure {
         }
         $baseKey.Close()
         return $null
-    } catch { return $null }
+    }
+    catch { return $null }
 }
 
 function ConvertTo-Base64Url {
@@ -82,7 +84,8 @@ function New-GcpAccessToken {
             assertion  = $jwt
         }
         return $tokenResponse.access_token
-    } catch { 
+    }
+    catch { 
         Write-Log "GCP Token Exchange Failed: $_" "ERROR"
         return $null 
     }
@@ -108,7 +111,8 @@ function Send-Telemetry {
         $uri = "https://firestore.googleapis.com/v1/projects/$ProjectId/databases/(default)/documents/telemetry"
         Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" } -Body $body | Out-Null
         return $true
-    } catch { 
+    }
+    catch { 
         Write-Log "Firestore Telemetry Error: $_" "WARN"
         return $false 
     }
@@ -137,7 +141,8 @@ function Invoke-RemoteModule {
             
             if ($result -is [PSCustomObject]) {
                 return $result
-            } else {
+            }
+            else {
                 return [PSCustomObject]@{
                     Module  = $Keyword
                     Success = $true
@@ -146,7 +151,8 @@ function Invoke-RemoteModule {
                 }
             }
         }
-    } catch {
+    }
+    catch {
         Write-Log "Module $Keyword execution failed: $_" "ERROR"
         return [PSCustomObject]@{
             Module  = $Keyword
@@ -175,12 +181,13 @@ function Test-ModuleCooldown {
             return $true
         }
         
-        $intervalHours = if($Mod.intervalHours){ $Mod.intervalHours } else { 24 }
+        $intervalHours = if ($Mod.intervalHours) { $Mod.intervalHours } else { 24 }
         if ($diff.TotalHours -lt $intervalHours) {
             Write-Log "Cooldown active for $($Mod.keyword) (Next run in $([Math]::Round($intervalHours - $diff.TotalHours, 1))h). Skipping."
             return $true
         }
-    } catch { }
+    }
+    catch { }
     
     return $false
 }
@@ -194,7 +201,8 @@ function Update-ModuleRegistry {
     if ($Success) {
         New-ItemProperty -Path $modRegPath -Name "LastRunSuccess" -Value (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $modRegPath -Name "LastStatus" -Value "Success" -PropertyType String -Force | Out-Null
-    } else {
+    }
+    else {
         New-ItemProperty -Path $modRegPath -Name "LastStatus" -Value "Failed" -PropertyType String -Force | Out-Null
     }
 }
@@ -218,10 +226,10 @@ try {
 
     # 2. Base Context
     $baseContext = @{
-        AccessToken = $gcpToken
-        ProjectId   = $projectId
+        AccessToken  = $gcpToken
+        ProjectId    = $projectId
         RegistryPath = $RegistryPath
-        LogPath     = $LogPath
+        LogPath      = $LogPath
     }
 
     # 3. Manifest Orchestration
@@ -252,11 +260,13 @@ try {
                 
                 # Update Registry
                 Update-ModuleRegistry -Keyword $mod.keyword -Success $resObj.Success
-            } else {
+            }
+            else {
                 Write-Log "Module $($mod.keyword) disabled. Skipping."
             }
         }
-    } catch {
+    }
+    catch {
         Write-Log "Manifest failure: $_" "ERROR"
     }
 
@@ -266,7 +276,7 @@ try {
         $telemetryPayload = @{
             deviceId        = $env:COMPUTERNAME
             timestamp       = (Get-Date).ToString("o")
-            manifestVersion = if($manifest){ $manifest.version } else { "unknown" }
+            manifestVersion = if ($manifest) { $manifest.version } else { "unknown" }
             eventType       = "governance_session"
             summary         = @{
                 totalModules   = $moduleResults.Count
@@ -282,7 +292,8 @@ try {
     }
 
     Write-Log "=== Launcher v2.1.0 Completed ==="
-} catch {
+}
+catch {
     Write-Log "Fatal Launcher Error: $_" "ERROR"
     exit 1
 }
