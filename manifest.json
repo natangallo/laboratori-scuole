@@ -2,13 +2,13 @@
   "version": "2.0.0",
   "generatedAt": "2026-04-20",
   "launcher": {
-    "scriptUrl": "01_Verticale_Windows/Launcher.ps1",
+    "scriptUrl": "Launcher.ps1",
     "hash": ""
   },
   "modules": [
     {
       "keyword": "profile-cleanup",
-      "scriptUrl": "01_Verticale_Windows/modules/Cleanup-Profiles.ps1",
+      "scriptUrl": "modules/Cleanup-Profiles.ps1",
       "type": "scheduled",
       "intervalHours": 24,
       "timeoutSeconds": 180,
@@ -22,7 +22,7 @@
     },
     {
       "keyword": "bitlocker-escrow",
-      "scriptUrl": "01_Verticale_Windows/modules/Escrow-Bitlocker.ps1",
+      "scriptUrl": "modules/Escrow-Bitlocker.ps1",
       "type": "oneshot",
       "timeoutSeconds": 300,
       "enabled": true,
