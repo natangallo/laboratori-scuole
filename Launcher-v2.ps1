@@ -1,21 +1,21 @@
 # .SYNOPSIS
 #     Rekordata Windows Governance Launcher
 # .DESCRIPTION
-#     v2.4.0 - Strict Zero-Disk Modular Architecture.
+#     v2.4.1 - Strict Zero-Disk Modular Architecture (Scope Fixed).
 # .NOTES
 #     Author: Rekordata Team
-#     Version: 2.4.0
+#     Version: 2.4.1
 
 #region 1. Configuration
-$script:BaseDir = "C:\ProgramData\Rekordata"
-$script:LogPath = Join-Path $script:BaseDir "Logs"
-$script:RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
-$script:MDMAuthValue = "MDMAuth"
+$global:BaseDir = "C:\ProgramData\Rekordata"
+$global:LogPath = Join-Path $global:BaseDir "Logs"
+$global:RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
+$global:MDMAuthValue = "MDMAuth"
 
-$script:GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
-$script:ModuleBaseUrl = $script:GitHubRepo
+$global:GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
+$global:ModuleBaseUrl = $global:GitHubRepo
 
-$script:GlobalHeaders = @{
+$global:GlobalHeaders = @{
     "Cache-Control" = "no-cache"
     "Pragma"        = "no-cache"
 }
@@ -26,8 +26,8 @@ function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logEntry = "[$timestamp] [$Level] [Launcher] $Message"
-    if (-not (Test-Path $script:LogPath)) { try { New-Item -ItemType Directory -Path $script:LogPath -Force | Out-Null } catch {} }
-    Add-Content -Path (Join-Path $script:LogPath "Governance.log") -Value $logEntry
+    if (-not (Test-Path $global:LogPath)) { try { New-Item -ItemType Directory -Path $global:LogPath -Force | Out-Null } catch {} }
+    Add-Content -Path (Join-Path $global:LogPath "Governance.log") -Value $logEntry
     Write-Host $logEntry
 }
 
@@ -111,11 +111,11 @@ function Invoke-RemoteModule {
         Write-Log "Fetching module '${Keyword}'..."
         $url = $ScriptUrl.Trim()
         if ($ScriptUrl -notlike "http*") {
-            if ($script:ModuleBaseUrl -notlike "*/") { $script:ModuleBaseUrl += "/" }
-            $url = ("{0}{1}" -f $script:ModuleBaseUrl, $ScriptUrl).Trim()
+            if ($global:ModuleBaseUrl -notlike "*/") { $global:ModuleBaseUrl += "/" }
+            $url = ("{0}{1}" -f $global:ModuleBaseUrl, $ScriptUrl).Trim()
         }
         $cacheBuster = [DateTime]::UtcNow.Ticks
-        $urlWithCache = "$url?nocache=$cacheBuster"
+        $urlWithCache = $url + "?nocache=" + $cacheBuster
         
         # Zero-Disk Download using .NET WebClient for perfect string encoding bypass Invoke-RestMethod truncation
         $webClient = New-Object System.Net.WebClient
@@ -144,7 +144,7 @@ function Test-ModuleCooldown {
         return $false 
     }
     
-    $path = "$script:RegistryPath\Modules\$($Mod.keyword)"
+    $path = "$global:RegistryPath\Modules\$($Mod.keyword)"
     $val = Get-RegistryValueSecure -Path $path -Name "LastRun"
     if ($null -eq $val -or -not $Mod.cooldownMinutes) { return $false }
     $lastRun = [DateTime]::Parse($val)
@@ -153,7 +153,7 @@ function Test-ModuleCooldown {
 
 function Update-ModuleRegistry {
     param([string]$Keyword, [bool]$Success)
-    $path = "$script:RegistryPath\Modules\$Keyword"
+    $path = "$global:RegistryPath\Modules\$Keyword"
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
     Set-ItemProperty -Path $path -Name "LastRun" -Value (Get-Date).ToString("o")
     
@@ -166,9 +166,9 @@ function Update-ModuleRegistry {
 
 # region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.4.0 Starting (Strict Zero-Disk) ==="
+    Write-Log "=== Launcher v2.4.1 Starting (Strict Zero-Disk) ==="
 
-    $b64Token = Get-RegistryValueSecure -Path $script:RegistryPath -Name $script:MDMAuthValue
+    $b64Token = Get-RegistryValueSecure -Path $global:RegistryPath -Name $global:MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
     $saObj = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64Token)) | ConvertFrom-Json
 
@@ -176,8 +176,8 @@ try {
     $projectId = $saObj.project_id
 
     # Get manifest with cache busting
-    $manifestUrl = ("{0}manifest.json" -f $script:GitHubRepo).Trim() + "?nocache=$([DateTime]::UtcNow.Ticks)"
-    $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers $script:GlobalHeaders -ErrorAction Stop
+    $manifestUrl = ("{0}manifest.json" -f $global:GitHubRepo).Trim() + "?nocache=" + [DateTime]::UtcNow.Ticks
+    $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers $global:GlobalHeaders -ErrorAction Stop
     
     Write-Log "Manifest Fetched. Version: $($manifest.version)"
 
@@ -192,7 +192,7 @@ try {
             continue
         }
 
-        $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$script:RegistryPath; LogPath=$script:LogPath }
+        $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$global:RegistryPath; LogPath=$global:LogPath }
         if ($mod.config) { foreach ($p in $mod.config.psobject.Properties) { $ctx[$p.Name] = $p.Value } }
 
         $res = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $ctx
@@ -208,7 +208,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.4.0 Completed ==="
+    Write-Log "=== Launcher v2.4.1 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
