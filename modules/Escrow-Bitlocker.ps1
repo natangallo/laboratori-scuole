@@ -2,12 +2,27 @@ param(
     [hashtable]$Context
 )
 
-#region Logic Hijack from Core-Ops
+# 1. Configurazione Iniziale & Validazione
 $LogPath = $Context.LogPath
 $AccessToken = $Context.AccessToken
 $RegistryPath = $Context.RegistryPath
-$BitlockerFolderId = if($Context.folderId){ $Context.folderId } else { "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A" }
-$BitlockerUsedSpaceOnly = if($null -ne $Context.usedSpaceOnly){ $Context.usedSpaceOnly } else { $true }
+$BitlockerFolderId = $Context.folderId
+$BitlockerUsedSpaceOnly = if ($null -ne $Context.usedSpaceOnly) { $Context.usedSpaceOnly } else { $true }
+
+if (-not $BitlockerFolderId) {
+    # Se manca l'ID, non procediamo per sicurezza.
+    # Creiamo un log entry e restituiamo errore al Launcher.
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [ERROR] [Mod:BitLocker] CRITICAL: BitlockerFolderId mancante nel manifest. Escrow impossibile."
+    if ($LogPath) { Add-Content -Path (Join-Path $LogPath "Governance.log") -Value $logEntry }
+    
+    return [PSCustomObject]@{
+        Module  = "bitlocker-escrow"
+        Success = $false
+        Status  = "Config Error"
+        Details = @{ error = "Mandatory folderId missing in manifest/context" }
+    }
+}
 
 function Write-ModuleLog {
     param([string]$Message, [string]$Level = "INFO")
