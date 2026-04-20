@@ -153,7 +153,7 @@ try {
     foreach ($mod in $manifest.modules) {
         if ($mod.enabled) {
             Write-Log "Fetching module '$($mod.name)'..."
-            $modContent = Invoke-RestMethod -Uri "$GitHubRepo$($mod.name)?nocache=$(Get-Date -UFormat %s)"
+            $modContent = Invoke-RestMethod -Uri "$GitHubRepo$($mod.path)?nocache=$(Get-Date -UFormat %s)"
             Write-Log "Executing $($mod.name) in-memory..."
             
             # Pass common context (Token, ProjectId)
