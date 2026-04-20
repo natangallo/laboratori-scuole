@@ -2,7 +2,7 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.1 - Modular Architecture (PS 5.1 Native Compatibility).
+    v2.2.2 - Modular Architecture (PS 5.1 Native Compatibility).
     This script is the central orchestrator (Plumbing) for Windows Governance.
     - Executed in-memory by the Bootstrap-Agent.
     - Handles JWT Exchange for Google Cloud.
@@ -10,7 +10,7 @@
     - Fetches and executes operational modules (manifest-driven).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.0
+    Version: 2.2.2
 #>
 
 #region 1. Configuration
@@ -177,7 +177,7 @@ function Update-ModuleRegistry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.0 Starting ==="
+    Write-Log "=== Launcher v2.2.2 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -208,7 +208,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.2.0 Completed ==="
+    Write-Log "=== Launcher v2.2.2 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
