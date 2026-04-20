@@ -19,7 +19,7 @@ $LogPath = Join-Path $BaseDir "Logs"
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
 # Base URL reflects the vertical folder structure for Windows
-$GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/01_Verticale_Windows/"
+$GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
 $ModuleBaseUrl = $GitHubRepo # Modules will be fetched relative to this (e.g., modules/Script.ps1)
 #endregion
 
