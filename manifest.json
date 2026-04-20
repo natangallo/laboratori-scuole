@@ -1,18 +1,35 @@
 {
   "version": "2.3.3",
+  "generatedAt": "2026-04-20",
+  "launcher": {
+    "scriptUrl": "Launcher-v2.ps1",
+    "hash": ""
+  },
   "modules": [
+    {
+      "keyword": "profile-cleanup",
+      "enabled": false,
+      "scriptUrl": "modules/Cleanup-Profiles.ps1",
+      "type": "scheduled",
+      "intervalHours": 24,
+      "timeoutSeconds": 180,
+      "cooldownMinutes": 1440,
+      "config": {
+        "minProfileAgeDays": 1
+      }
+    },
     {
       "keyword": "bitlocker-escrow",
       "enabled": true,
       "scriptUrl": "modules/Escrow-Bitlocker.ps1",
+      "type": "oneshot",
+      "timeoutSeconds": 300,
       "cooldownMinutes": 1440,
-      "forceRun": true
-    },
-    {
-      "keyword": "cleanup-profiles",
-      "enabled": false,
-      "scriptUrl": "modules/Cleanup-Profiles.ps1",
-      "cooldownMinutes": 1440
+      "forceRun": true,
+      "config": {
+        "BitlockerFolderId": "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A",
+        "usedSpaceOnly": true
+      }
     }
   ]
 }
