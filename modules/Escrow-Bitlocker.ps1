@@ -1,0 +1,143 @@
+param(
+    [hashtable]$Context
+)
+
+#region Logic Hijack from Core-Ops
+$LogPath = $Context.LogPath
+$AccessToken = $Context.AccessToken
+$RegistryPath = $Context.RegistryPath
+$BitlockerFolderId = if($Context.folderId){ $Context.folderId } else { "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A" }
+$BitlockerUsedSpaceOnly = if($null -ne $Context.usedSpaceOnly){ $Context.usedSpaceOnly } else { $true }
+
+function Write-ModuleLog {
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] [Mod:BitLocker] $Message"
+    Add-Content -Path (Join-Path $LogPath "Governance.log") -Value $logEntry
+    Write-Host $logEntry
+}
+
+function Get-RegistryValueSecure {
+    param([string]$Path, [string]$Name)
+    try {
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+        $subKeyPath = $Path.Replace("HKLM:\", "").Replace("HKEY_LOCAL_MACHINE\", "")
+        $subKey = $baseKey.OpenSubKey($subKeyPath)
+        if ($subKey) {
+            $value = $subKey.GetValue($Name)
+            $subKey.Close(); $baseKey.Close()
+            return $value
+        }
+        $baseKey.Close()
+        return $null
+    } catch { return $null }
+}
+
+function Send-DriveUploadMultipart {
+    param([string]$FileName, [string]$Content, [string]$FolderId, [string]$AccessToken)
+    try {
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $metadata = @{ name = $FileName; parents = @($FolderId) } | ConvertTo-Json -Compress
+        $body = @("--$boundary", "Content-Type: application/json; charset=UTF-8", "", $metadata, "--$boundary", "Content-Type: text/plain; charset=UTF-8", "", $Content, "--${boundary}--") -join "`r`n"
+        $uri = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true"
+        Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "Authorization" = "Bearer $AccessToken" } -Body $body -ContentType "multipart/related; boundary=$boundary" -ErrorAction Stop | Out-Null
+        return $true
+    } catch { return $false }
+}
+
+function Invoke-PremiumNotification {
+    Write-ModuleLog "Triggering User Notification UI..."
+    $uiPath = "C:\ProgramData\Rekordata\BitLocker-UI.ps1"
+    $uiScript = @"
+Add-Type -AssemblyName System.Windows.Forms
+`$msg = "REKORDATA - Sicurezza Sistemi`n`nLa protezione BitLocker e' stata attivata con successo sul disco di sistema. I tuoi dati sono ora in fase di protezione.`n`nPer completare ufficialmente la configurazione, e' consigliato un riavvio del computer al termine della sessione attuale.`n`nVuoi riavviare ora?"
+`$title = "Protezione Disco Attivata"
+`$res = [System.Windows.Forms.MessageBox]::Show(`$msg, `$title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+if (`$res -eq [System.Windows.Forms.DialogResult]::Yes) {
+    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza del sistema. Salva il tuo lavoro." /f
+}
+Unregister-ScheduledTask -TaskName "RekordataBitLockerUI" -Confirm:`$false -ErrorAction SilentlyContinue
+Remove-Item -Path `$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
+"@
+    $uiScript | Out-File -FilePath $uiPath -Encoding UTF8 -Force
+    $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$uiPath`""
+    $principal = New-ScheduledTaskPrincipal -GroupId "Users"
+    Register-ScheduledTask -TaskName "RekordataBitLockerUI" -Action $action -Principal $principal -Force | Out-Null
+    Start-ScheduledTask -TaskName "RekordataBitLockerUI"
+}
+
+function Get-BitLockerMDMPolicy {
+    $fvePath = "HKLM:\SOFTWARE\Policies\Microsoft\FVE"
+    if (-not (Test-Path $fvePath)) { return @{ PolicyPresent = $false } }
+    $rawMethod = (Get-ItemProperty -Path $fvePath -ErrorAction SilentlyContinue).EncryptionMethodWithXtsOs
+    $methodMap = @{ 3 = "aes128"; 4 = "aes256"; 6 = "xts_aes128"; 7 = "xts_aes256" }
+    return @{ PolicyPresent = $true; EncryptionMethod = if($methodMap.ContainsKey([int]$rawMethod)){ $methodMap[[int]$rawMethod] } else { "xts_aes256" } }
+}
+
+function Invoke-BitLockerActivation {
+    param([string]$EncryptionMethod = "xts_aes256")
+    try {
+        $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+        if ($vol.ProtectionStatus -eq "On") { return @{ Success = $true; StatusNote = "already_active" } }
+        
+        Write-ModuleLog "Activating BitLocker (Method: $EncryptionMethod)..."
+        manage-bde -protectors -add $env:SystemDrive -tpm -RecoveryPassword | Out-Null
+        $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest", "-Used")
+        $output = manage-bde.exe @cmdArgs
+        if ($LASTEXITCODE -eq 0) { 
+            Invoke-PremiumNotification
+            return @{ Success = $true; StatusNote = "activated" } 
+        }
+        return @{ Success = $false; StatusNote = "error" }
+    } catch { return @{ Success = $false; StatusNote = "failed" } }
+}
+#endregion
+
+#region Execution
+Write-ModuleLog "Checking BitLocker Governance..."
+$mdmPolicy = Get-BitLockerMDMPolicy
+if (-not $mdmPolicy.PolicyPresent) {
+    Write-ModuleLog "No MDM Policy for BitLocker. Skipping."
+    return
+}
+
+$activation = Invoke-BitLockerActivation -EncryptionMethod $mdmPolicy.EncryptionMethod
+if ($activation.Success) {
+    Write-ModuleLog "BitLocker State OK ($($activation.StatusNote)). Processing Escrow..."
+    $blVolume = Get-BitLockerVolume -MountPoint $env:SystemDrive
+    $recoveryProtector = $blVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' }
+    
+    if ($recoveryProtector) {
+        $id = $recoveryProtector.KeyProtectorId
+        $lastSyncId = Get-RegistryValueSecure -Path $RegistryPath -Name "LastBitLockerSyncId"
+        if ($id -eq $lastSyncId) {
+            Write-ModuleLog "Key already synced."
+        } else {
+            $serial = (Get-CimInstance Win32_Bios).SerialNumber
+            $content = "Hostname: $($env:COMPUTERNAME)`nSerial: $serial`nDisk: C:`nID: $id`nKey: $($recoveryProtector.RecoveryPassword)"
+            $fileName = "$($env:COMPUTERNAME)_C_BitLocker.txt"
+            
+            if (Send-DriveUploadMultipart -FileName $fileName -Content $content -FolderId $BitlockerFolderId -AccessToken $AccessToken) {
+                Write-ModuleLog "Escrow successful."
+                New-ItemProperty -Path $RegistryPath -Name "LastBitLockerSyncId" -Value $id -PropertyType String -Force | Out-Null
+            } else {
+                Write-ModuleLog "Escrow failed." "ERROR"
+            }
+        }
+    }
+} else {
+    Write-ModuleLog "Activation step failed." "ERROR"
+}
+
+# Return ResultObject to Launcher
+return [PSCustomObject]@{
+    Module  = "bitlocker-escrow"
+    Success = if($activation.Success){ $true } else { $false }
+    Status  = if($activation.Success){ "Completed" } else { "Failed" }
+    Details = @{
+        activationStatus = $activation.StatusNote
+        policyPresent    = $mdmPolicy.PolicyPresent
+        synced           = if($id -and $id -eq $lastSyncId){ "already_synced" } elseif ($id) { "uploaded" } else { "none" }
+    }
+}
+#endregion
