@@ -1,12 +1,10 @@
-<#
-.SYNOPSIS
-    Rekordata Windows Governance Launcher
-.DESCRIPTION
-    v2.3.4 - Modular Architecture (Disk-Temporary, Scope Fixes, Syntax Fixes).
-.NOTES
-    Author: Rekordata Team
-    Version: 2.3.4
-#>
+# .SYNOPSIS
+#     Rekordata Windows Governance Launcher
+# .DESCRIPTION
+#     v2.4.0 - Strict Zero-Disk Modular Architecture.
+# .NOTES
+#     Author: Rekordata Team
+#     Version: 2.4.0
 
 #region 1. Configuration
 $script:BaseDir = "C:\ProgramData\Rekordata"
@@ -14,11 +12,9 @@ $script:LogPath = Join-Path $script:BaseDir "Logs"
 $script:RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $script:MDMAuthValue = "MDMAuth"
 
-# Base URL reflects the vertical folder structure for Windows
 $script:GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
 $script:ModuleBaseUrl = $script:GitHubRepo
 
-# Global Headers for Cache-Busting
 $script:GlobalHeaders = @{
     "Cache-Control" = "no-cache"
     "Pragma"        = "no-cache"
@@ -111,20 +107,25 @@ function Send-Telemetry {
 #region 3. Execution Engine
 function Invoke-RemoteModule {
     param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
-    $tempModPath = Join-Path $env:TEMP "Mod-${Keyword}.ps1"
     try {
         Write-Log "Fetching module '${Keyword}'..."
         $url = $ScriptUrl.Trim()
         if ($ScriptUrl -notlike "http*") {
+            if ($script:ModuleBaseUrl -notlike "*/") { $script:ModuleBaseUrl += "/" }
             $url = ("{0}{1}" -f $script:ModuleBaseUrl, $ScriptUrl).Trim()
         }
         $cacheBuster = [DateTime]::UtcNow.Ticks
         $urlWithCache = "$url?nocache=$cacheBuster"
-        Invoke-WebRequest -Uri $urlWithCache -Headers $script:GlobalHeaders -OutFile $tempModPath -ErrorAction Stop
         
-        if (Test-Path $tempModPath) {
-            Write-Log "Executing ${Keyword} from disk (temp)..."
-            $result = & $tempModPath $Context
+        # Zero-Disk Download using .NET WebClient for perfect string encoding bypass Invoke-RestMethod truncation
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Headers.Add("Cache-Control", "no-cache")
+        $scriptContent = $webClient.DownloadString($urlWithCache)
+        
+        if ($scriptContent) {
+            Write-Log "Executing ${Keyword} in-memory (Zero-Disk)..."
+            $scriptBlock = [scriptblock]::Create($scriptContent)
+            $result = Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $Context
             if ($result -is [PSCustomObject]) { return $result }
             else { return [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" } }
         }
@@ -133,14 +134,10 @@ function Invoke-RemoteModule {
         Write-Log "Module ${Keyword} failed: $_" "ERROR"
         return [PSCustomObject]@{ Module=$Keyword; Success=$false; Status="Error"; Details=@{ Error=$_.ToString() } }
     }
-    finally {
-        if (Test-Path $tempModPath) { Remove-Item $tempModPath -Force -ErrorAction SilentlyContinue }
-    }
 }
 
 function Test-ModuleCooldown {
     param($Mod)
-    # Debug logging for cooldown
     $isForce = if($Mod.psobject.Properties['forceRun']) { $Mod.forceRun } else { $false }
     if ($isForce -eq $true) { 
         Write-Log "Module $($Mod.keyword) has forceRun enabled. Cooldown ignored."
@@ -169,7 +166,7 @@ function Update-ModuleRegistry {
 
 # region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.3.4 Starting (Scope Fixed) ==="
+    Write-Log "=== Launcher v2.4.0 Starting (Strict Zero-Disk) ==="
 
     $b64Token = Get-RegistryValueSecure -Path $script:RegistryPath -Name $script:MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -211,7 +208,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.3.4 Completed ==="
+    Write-Log "=== Launcher v2.4.0 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
