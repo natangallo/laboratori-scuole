@@ -4,7 +4,8 @@ param(
 
 # 1. Configurazione Iniziale
 $LogPath = $Context.LogPath
-$MinProfileAgeDays = if ($Context.minProfileAgeDays) { $Context.minProfileAgeDays } else { 1 }
+$MinProfileAgeDays = 1
+if ($Context.minProfileAgeDays) { $MinProfileAgeDays = $Context.minProfileAgeDays }
 
 function Write-ModuleLog {
     param([string]$Message, [string]$Level = "INFO")
