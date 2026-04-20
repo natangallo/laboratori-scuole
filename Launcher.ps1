@@ -6,8 +6,9 @@
 .NOTES
     Author: Rekordata Team
     Version: 2.3.0
+#>
 
-# region 1. Configuration
+#region 1. Configuration
 $BaseDir = "C:\ProgramData\Rekordata"
 $LogPath = Join-Path $BaseDir "Logs"
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
