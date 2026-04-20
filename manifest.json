@@ -7,6 +7,12 @@
       "scriptUrl": "modules/Escrow-Bitlocker.ps1",
       "cooldownMinutes": 1440,
       "forceRun": true
+    },
+    {
+      "keyword": "cleanup-profiles",
+      "enabled": false,
+      "scriptUrl": "modules/Cleanup-Profiles.ps1",
+      "cooldownMinutes": 1440
     }
   ]
 }
