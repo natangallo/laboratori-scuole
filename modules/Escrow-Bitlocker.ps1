@@ -105,7 +105,14 @@ function Invoke-BitLockerActivation {
     try {
         $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
 
-        # 1. CASO: GIÀ ATTIVO
+        # 1. CASO: SOSPESO
+        if ($vol.ProtectionStatus -eq "Off" -and $vol.VolumeStatus -eq "FullyEncrypted") {
+            Write-ModuleLog "BitLocker risulta SOSPESO. Ripristino protezione..."
+            manage-bde -resume $env:SystemDrive | Out-Null
+            return @{ Success = $true; StatusNote = "resumed" }
+        }
+
+        # 2. CASO: GIÀ ATTIVO
         if ($vol.ProtectionStatus -eq "On") {
             Write-ModuleLog "BitLocker già attivo."
             if (-not ($vol.KeyProtector | Where-Object {$_.KeyProtectorType -eq 'RecoveryPassword'})) {
@@ -117,7 +124,7 @@ function Invoke-BitLockerActivation {
             }
         }
 
-        # 2. CASO: DISATTIVATO (Attivazione Silente)
+        # 3. CASO: DISATTIVATO (Attivazione Silente)
         Write-ModuleLog "Avvio attivazione silente via manage-bde (UsedSpaceOnly=$BitlockerUsedSpaceOnly)..."
         
         # Gestione TPM: Aggiungi solo se manca
@@ -132,23 +139,15 @@ function Invoke-BitLockerActivation {
             manage-bde -protectors -add $env:SystemDrive -RecoveryPassword | Out-Null
         }
 
-        # Primo tentativo: deleghiamo il metodo di cifratura direttamente alla GPO/MDM omettendo -EncryptionMethod.
-        $cmdArgs = @("-on", $env:SystemDrive, "-SkipHardwareTest")
-        if ($BitlockerUsedSpaceOnly) { $cmdArgs += "-used" }
+        # Commando di attivazione finale con SkipHardwareTest (attivazione LIVE)
+        $cmdArgs = @("-on", $env:SystemDrive, "-EncryptionMethod", $EncryptionMethod, "-SkipHardwareTest")
+        if ($BitlockerUsedSpaceOnly) { $cmdArgs += "-Used" }
 
-        $output = & manage-bde.exe @cmdArgs 2>&1
+        Write-ModuleLog "Running: manage-bde $($cmdArgs -join ' ')"
+        $output = manage-bde.exe @cmdArgs
         $exitCode = $LASTEXITCODE
 
-        # GPO Conflict Fallback: Se la MDM inforza un tipo di cifratura diverso (es. Full Disk), e noi forziamo -used,
-        # manage-bde lancia 0x80070057 (Parametro non corretto). Ritentiamo senza -used.
-        if ($exitCode -ne 0 -and $output -match "0x80070057" -and $BitlockerUsedSpaceOnly) {
-            Write-ModuleLog "Rilevato conflitto GPO con '-used' (0x80070057). Ritento seguendo la policy MDM..."
-            $cmdArgs = @("-on", $env:SystemDrive, "-SkipHardwareTest")
-            $output = & manage-bde.exe @cmdArgs 2>&1
-            $exitCode = $LASTEXITCODE
-        }
-
-        if ($exitCode -eq 0 -or $output -match "already encrypted" -or $output -match "encryption is in progress") {
+        if ($exitCode -eq 0) {
             Write-ModuleLog "BitLocker attivato correttamente."
             Invoke-PremiumNotification
             return @{ Success = $true; StatusNote = "activated" }
@@ -157,7 +156,7 @@ function Invoke-BitLockerActivation {
             return @{ Success = $false; StatusNote = "activation_error"; Output = ($output -join ' | ') }
         }
     } catch { 
-        Write-ModuleLog "Fatal Activation Error: $_" "ERROR"
+        Write-ModuleLog "BitLocker activation failed: $_" "ERROR"
         return @{ Success = $false; StatusNote = "failed" } 
     }
 }
