@@ -24,6 +24,8 @@ $ModuleBaseUrl = $GitHubRepo # Modules will be fetched relative to this (e.g., m
 #endregion
 
 #region 2. Plumbing Functions
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -88,8 +90,14 @@ function New-GcpAccessToken {
         }
         return $tokenResponse.access_token
     }
-    catch { 
-        Write-Log "GCP Token Exchange Failed: $_" "ERROR"
+    catch {
+        $errorMessage = $_.ToString()
+        if ($_.Exception.Response) {
+            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+            $details = $reader.ReadToEnd()
+            $errorMessage += " | Details: $details"
+        }
+        Write-Log "GCP Token Exchange Failed: $errorMessage" "ERROR"
         return $null 
     }
 }
