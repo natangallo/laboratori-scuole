@@ -1,12 +1,10 @@
-<#
-.SYNOPSIS
-    Rekordata Windows Governance - BitLocker Module
-.DESCRIPTION
-    v2.3.0 - Zero-Cache Production (Core-Ops DNA).
-.NOTES
-    Author: Rekordata Team
-    Version: 2.3.0
-#>
+# .SYNOPSIS
+#     Rekordata Windows Governance - BitLocker Module
+# .DESCRIPTION
+#     v2.4.0 - Zero-Disk production alignment.
+# .NOTES
+#     Author: Rekordata Team
+#     Version: 2.4.0
 
 param(
     [hashtable]$Context
@@ -29,7 +27,7 @@ if (-not $BitlockerFolderId) {
     
     return [PSCustomObject]@{
         Module  = "bitlocker-escrow"
-        Success = $true
+        Success = $false
         Status  = "Config Error"
         Details = @{ error = "Mandatory folderId missing in manifest/context" }
     }
@@ -46,7 +44,6 @@ function Write-ModuleLog {
 function Get-RegistryValueSecure {
     param([string]$Path, [string]$Name)
     try {
-        # Usa .NET per bypassare la redirection del registro
         $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
         $subKeyPath = $Path.Replace("HKLM:\", "").Replace("HKEY_LOCAL_MACHINE\", "")
         $subKey = $baseKey.OpenSubKey($subKeyPath)
@@ -148,7 +145,7 @@ function Invoke-BitLockerActivation {
             return @{ Success = $true; StatusNote = "activated" }
         } else {
             Write-ModuleLog "Errore manage-bde ($exitCode): $($output -join ' | ')" "ERROR"
-            return @{ Success = $false; StatusNote = "activation_error"; Output = ($output -join ' | ') }
+            return @{ Success = $false; StatusNote = "activation_error", Output = ($output -join ' | ') }
         }
     } catch { 
         Write-ModuleLog "Fatal Activation Error: $_" "ERROR"
@@ -193,14 +190,24 @@ if ($activation.Success) {
     Write-ModuleLog "Activation step failed. Detail: $($activation.Output)" "ERROR"
 }
 
+# Prepare return object
+$finalSuccess = [bool]$activation.Success
+$finalStatus = "Failed"
+if ($finalSuccess) { $finalStatus = "Completed" }
+
+$syncStatus = "none"
+if ($id -and $id -eq $lastSyncId) { $syncStatus = "already_synced" }
+elseif ($id) { $syncStatus = "uploaded" }
+
 # Return ResultObject to Launcher
 return [PSCustomObject]@{
     Module  = "bitlocker-escrow"
-    Success = $activation.Success
-    Status  = "Completed"
+    Success = $finalSuccess
+    Status  = $finalStatus
     Details = @{
         activationStatus = $activation.StatusNote
         policyPresent    = $mdmPolicy.PolicyPresent
+        synced           = $syncStatus
     }
 }
 #endregion
