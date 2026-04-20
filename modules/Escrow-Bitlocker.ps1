@@ -80,7 +80,7 @@ Add-Type -AssemblyName System.Windows.Forms
 `$title = "Protezione Disco Attivata"
 `$res = [System.Windows.Forms.MessageBox]::Show(`$msg, `$title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
 if (`$res -eq [System.Windows.Forms.DialogResult]::Yes) {
-    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza des sistema. Salva il tuo lavoro." /f
+    shutdown.exe /r /t 60 /c "REKORDATA: Riavvio programmato per finalizzare la sicurezza del sistema. Salva il tuo lavoro." /f
 }
 Unregister-ScheduledTask -TaskName "RekordataBitLockerUI" -Confirm:`$false -ErrorAction SilentlyContinue
 Remove-Item -Path `$MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
