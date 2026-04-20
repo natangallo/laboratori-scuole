@@ -2,31 +2,33 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.0.0 - Modular Architecture.
+    v2.2.0 - Modular Architecture (L00 Aligned).
     This script is the central orchestrator (Plumbing) for Windows Governance.
+    - Executed in-memory by the Bootstrap-Agent.
     - Handles JWT Exchange for Google Cloud.
     - Manages shared Telemetry (Firestore).
-    - Fetches and executes operational modules in-memory.
+    - Fetches and executes operational modules (manifest-driven).
 .NOTES
     Author: Rekordata Team
-    Version: 2.0.0
+    Version: 2.2.0
 #>
 
-#region Configuration
+#region 1. Configuration
 $BaseDir = "C:\ProgramData\Rekordata"
 $LogPath = Join-Path $BaseDir "Logs"
 $RegistryPath = "HKLM:\SOFTWARE\Policies\Rekordata\Governance"
 $MDMAuthValue = "MDMAuth"
-$ModuleBaseUrl = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/modules/"
-$GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/"
+# Base URL reflects the vertical folder structure for Windows
+$GitHubRepo = "https://raw.githubusercontent.com/natangallo/laboratori-scuole/main/01_Verticale_Windows/"
+$ModuleBaseUrl = $GitHubRepo # Modules will be fetched relative to this (e.g., modules/Script.ps1)
 #endregion
 
-#region Plumbing Functions (Auth & Telemetry)
+#region 2. Plumbing Functions
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logEntry = "[$timestamp] [$Level] [Launcher] $Message"
-    if (-not (Test-Path $LogPath)) { New-Item -ItemType Directory -Path $LogPath -Force | Out-Null }
+    if (-not (Test-Path $LogPath)) { try { New-Item -ItemType Directory -Path $LogPath -Force | Out-Null } catch {} }
     Add-Content -Path (Join-Path $LogPath "Governance.log") -Value $logEntry
     Write-Host $logEntry
 }
@@ -42,10 +44,8 @@ function Get-RegistryValueSecure {
             $subKey.Close(); $baseKey.Close()
             return $value
         }
-        $baseKey.Close()
-        return $null
-    }
-    catch { return $null }
+        $baseKey.Close(); return $null
+    } catch { return $null }
 }
 
 function ConvertTo-Base64Url {
@@ -98,11 +98,9 @@ function Send-Telemetry {
         foreach ($key in $Data.Keys) {
             $val = $Data[$key]
             if ($val -is [int]) { $fields[$key] = @{ integerValue = $val } }
-            elseif ($val -is [double] -or $val -is [float]) { $fields[$key] = @{ doubleValue = $val } }
             elseif ($val -is [bool]) { $fields[$key] = @{ booleanValue = $val } }
             elseif ($key -eq "timestamp") { $fields[$key] = @{ timestampValue = $val } }
             elseif ($val -is [hashtable] -or $val -is [array] -or $val -is [PSCustomObject]) {
-                # Convert complex objects to JSON string to avoid Firestore nesting complexity
                 $fields[$key] = @{ stringValue = ($val | ConvertTo-Json -Compress -Depth 10) }
             }
             else { $fields[$key] = @{ stringValue = [string]$val } }
@@ -111,190 +109,89 @@ function Send-Telemetry {
         $uri = "https://firestore.googleapis.com/v1/projects/$ProjectId/databases/(default)/documents/telemetry"
         Invoke-RestMethod -Uri $uri -Method Post -Headers @{ "Authorization" = "Bearer $AccessToken"; "Content-Type" = "application/json" } -Body $body | Out-Null
         return $true
-    }
-    catch { 
-        Write-Log "Firestore Telemetry Error: $_" "WARN"
-        return $false 
-    }
+    } catch { return $false }
 }
 #endregion
 
-#region Module Execution Engine
+#region 3. Execution Engine
 function Invoke-RemoteModule {
-    param(
-        [string]$Keyword,
-        [string]$ScriptUrl,
-        [hashtable]$Context,
-        [int]$TimeoutSeconds = 300
-    )
+    param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
     try {
-        Write-Log "Fetching module '$Keyword' from $ScriptUrl..."
-        $url = if ($ScriptUrl -like "http*") { $ScriptUrl } else { "${GitHubRepo}${ScriptUrl}" }
+        Write-Log "Fetching module '$Keyword'..."
+        $url = if ($ScriptUrl -like "http*") { $ScriptUrl } else { "${ModuleBaseUrl}${ScriptUrl}" }
         $scriptContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
         
         if ($scriptContent) {
-            Write-Log "Executing $Keyword in-memory (Timeout: ${TimeoutSeconds}s)..."
+            Write-Log "Executing $Keyword in-memory..."
             $scriptBlock = [scriptblock]::Create($scriptContent)
-            
-            # Execute and capture the ResultObject
             $result = Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $Context
             
-            if ($result -is [PSCustomObject]) {
-                return $result
-            }
-            else {
-                return [PSCustomObject]@{
-                    Module  = $Keyword
-                    Success = $true
-                    Status  = "Completed (No ResultObject)"
-                    Details = @{}
-                }
-            }
+            return if ($result -is [PSCustomObject]) { $result } else { [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" } }
         }
     }
     catch {
-        Write-Log "Module $Keyword execution failed: $_" "ERROR"
-        return [PSCustomObject]@{
-            Module  = $Keyword
-            Success = $false
-            Status  = "Error"
-            Details = @{ Error = $_.ToString() }
-        }
+        Write-Log "Module $Keyword failed: $_" "ERROR"
+        return [PSCustomObject]@{ Module=$Keyword; Success=$false; Status="Error"; Details=@{ Error=$_.ToString() } }
     }
 }
 
 function Test-ModuleCooldown {
     param($Mod)
     if ($Mod.forceRun) { return $false }
-    
-    $modRegPath = "$RegistryPath\Modules\$($Mod.keyword)"
-    $lastRunValue = Get-RegistryValueSecure -Path $modRegPath -Name "LastRunSuccess"
-    
-    if ($null -eq $lastRunValue) { return $false }
-    
+    $lastRun = Get-RegistryValueSecure -Path "$RegistryPath\Modules\$($Mod.keyword)" -Name "LastRunSuccess"
+    if (-not $lastRun) { return $false }
     try {
-        $lastDate = [DateTime]::Parse($lastRunValue)
-        $diff = (Get-Date) - $lastDate
-        
-        if ($Mod.type -eq "oneshot") {
-            Write-Log "Module $($Mod.keyword) is oneshot and already succeeded on $lastDate. Skipping."
-            return $true
-        }
-        
-        $intervalHours = if ($Mod.intervalHours) { $Mod.intervalHours } else { 24 }
-        if ($diff.TotalHours -lt $intervalHours) {
-            Write-Log "Cooldown active for $($Mod.keyword) (Next run in $([Math]::Round($intervalHours - $diff.TotalHours, 1))h). Skipping."
-            return $true
-        }
-    }
-    catch { }
-    
-    return $false
+        $diff = (Get-Date) - [DateTime]::Parse($lastRun)
+        $limit = if ($Mod.intervalHours) { $Mod.intervalHours } else { 24 }
+        return ($diff.TotalHours -lt $limit)
+    } catch { return $false }
 }
 
 function Update-ModuleRegistry {
     param($Keyword, $Success)
-    $modRegPath = "$RegistryPath\Modules\$Keyword"
-    if (-not (Test-Path $modRegPath)) { New-Item -Path $modRegPath -Force | Out-Null }
-    
-    New-ItemProperty -Path $modRegPath -Name "LastRun" -Value (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") -PropertyType String -Force | Out-Null
-    if ($Success) {
-        New-ItemProperty -Path $modRegPath -Name "LastRunSuccess" -Value (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $modRegPath -Name "LastStatus" -Value "Success" -PropertyType String -Force | Out-Null
-    }
-    else {
-        New-ItemProperty -Path $modRegPath -Name "LastStatus" -Value "Failed" -PropertyType String -Force | Out-Null
-    }
+    $reg = "$RegistryPath\Modules\$Keyword"
+    if (-not (Test-Path $reg)) { New-Item -Path $reg -Force | Out-Null }
+    New-ItemProperty -Path $reg -Name "LastRun" -Value (Get-Date).ToString("o") -PropertyType String -Force | Out-Null
+    if ($Success) { New-ItemProperty -Path $reg -Name "LastRunSuccess" -Value (Get-Date).ToString("o") -PropertyType String -Force | Out-Null }
 }
 #endregion
 
-#region Main Logic
+#region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.1.0 Starting ==="
+    Write-Log "=== Launcher v2.2.0 Starting ==="
     
-    # 1. Auth Retrieval
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
-    if (-not $b64Token) { Write-Log "MDMAuth missing." "ERROR"; exit 1 }
+    if (-not $b64Token) { throw "Auth missing." }
 
     $saObj = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64Token)) | ConvertFrom-Json
     $gcpToken = New-GcpAccessToken -ServiceAccount $saObj
     $projectId = $saObj.project_id
     
-    $saObj = $null; $b64Token = $null; [System.GC]::Collect()
-
-    if (-not $gcpToken) { Write-Log "GCP Auth failed. Firestore telemetry will be disabled." "WARN" }
-
-    # 2. Base Context
-    $baseContext = @{
-        AccessToken  = $gcpToken
-        ProjectId    = $projectId
-        RegistryPath = $RegistryPath
-        LogPath      = $LogPath
-    }
-
-    # 3. Manifest Orchestration
-    Write-Log "Fetching manifest..."
-    $manifestUrl = "${GitHubRepo}manifest.json"
-    $moduleResults = @()
+    $manifest = Invoke-RestMethod -Uri "${GitHubRepo}manifest.json" -ErrorAction Stop
+    $results = @()
     
-    try {
-        $manifest = Invoke-RestMethod -Uri $manifestUrl -ErrorAction Stop
-        Write-Log "Manifest v$($manifest.version) loaded."
-        
-        foreach ($mod in $manifest.modules) {
-            if ($mod.enabled) {
-                # Check Cooldown
-                if (Test-ModuleCooldown -Mod $mod) { continue }
-
-                # Prepare module context: Base Context + manifest.config
-                $moduleContext = $baseContext.Clone()
-                if ($mod.config) {
-                    foreach ($key in $mod.config.psobject.properties.Name) {
-                        $moduleContext[$key] = $mod.config.$key
-                    }
-                }
-
-                # Execution
-                $resObj = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $moduleContext -TimeoutSeconds $mod.timeoutSeconds
-                $moduleResults += $resObj
-                
-                # Update Registry
-                Update-ModuleRegistry -Keyword $mod.keyword -Success $resObj.Success
-            }
-            else {
-                Write-Log "Module $($mod.keyword) disabled. Skipping."
-            }
+    foreach ($mod in $manifest.modules) {
+        if ($mod.enabled -and -not (Test-ModuleCooldown -Mod $mod)) {
+            $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$RegistryPath; LogPath=$LogPath }
+            if ($mod.config) { foreach ($p in $mod.config.psobject.properties.Name) { $ctx[$p] = $mod.config.$p } }
+            
+            $res = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $ctx
+            $results += $res
+            Update-ModuleRegistry -Keyword $mod.keyword -Success $res.Success
         }
     }
-    catch {
-        Write-Log "Manifest failure: $_" "ERROR"
-    }
 
-    # 4. Final Unified Telemetry
-    if ($gcpToken -and $moduleResults.Count -gt 0) {
-        Write-Log "Sending unified telemetry for $($moduleResults.Count) modules..."
-        $telemetryPayload = @{
-            deviceId        = $env:COMPUTERNAME
-            timestamp       = (Get-Date).ToString("o")
-            manifestVersion = if ($manifest) { $manifest.version } else { "unknown" }
-            eventType       = "governance_session"
-            summary         = @{
-                totalModules   = $moduleResults.Count
-                successModules = ($moduleResults | Where-Object { $_.Success }).Count
-            }
-            # Add detailed results (Firestore handles nested maps/arrays)
-            # Note: We convert results to a more Firestore-friendly format if needed
-            details         = $moduleResults
+    if ($gcpToken -and $results.Count -gt 0) {
+        $payload = @{
+            deviceId = $env:COMPUTERNAME; timestamp=(Get-Date).ToString("o")
+            summary = @{ total=$results.Count; success=($results | Where-Object { $_.Success }).Count }
+            details = $results
         }
-        
-        # We need a revised Send-Telemetry that handles deep objects or just strings
-        Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $telemetryPayload | Out-Null
+        Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-
-    Write-Log "=== Launcher v2.1.0 Completed ==="
+    Write-Log "=== Launcher v2.2.0 Completed ==="
 }
 catch {
-    Write-Log "Fatal Launcher Error: $_" "ERROR"
-    exit 1
+    Write-Log "Launcher Fatal: $_" "ERROR"
 }
 #endregion
