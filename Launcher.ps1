@@ -2,7 +2,7 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.0 - Modular Architecture (L00 Aligned).
+    v2.2.1 - Modular Architecture (PS 5.1 Native Compatibility).
     This script is the central orchestrator (Plumbing) for Windows Governance.
     - Executed in-memory by the Bootstrap-Agent.
     - Handles JWT Exchange for Google Cloud.
@@ -58,7 +58,10 @@ function New-GcpAccessToken {
     param([object]$ServiceAccount)
     try {
         $header = @{ alg = "RS256"; typ = "JWT" } | ConvertTo-Json -Compress
-        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        
+        # Safe epoch calculation for PS 5.1
+        $epoch = [datetime]"1970-01-01 00:00:00"
+        $now = [int][timespan]::FromTicks((Get-Date).ToUniversalTime().Ticks - $epoch.Ticks).TotalSeconds
         $claim = @{
             iss   = $ServiceAccount.client_email
             scope = "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/drive"
@@ -118,7 +121,10 @@ function Invoke-RemoteModule {
     param([string]$Keyword, [string]$ScriptUrl, [hashtable]$Context)
     try {
         Write-Log "Fetching module '$Keyword'..."
-        $url = if ($ScriptUrl -like "http*") { $ScriptUrl } else { "${ModuleBaseUrl}${ScriptUrl}" }
+        $url = $ScriptUrl
+        if ($ScriptUrl -notlike "http*") {
+            $url = "${ModuleBaseUrl}${ScriptUrl}"
+        }
         $scriptContent = Invoke-RestMethod -Uri $url -ErrorAction Stop
         
         if ($scriptContent) {
@@ -126,7 +132,11 @@ function Invoke-RemoteModule {
             $scriptBlock = [scriptblock]::Create($scriptContent)
             $result = Invoke-Command -ScriptBlock $scriptBlock -ArgumentList $Context
             
-            return if ($result -is [PSCustomObject]) { $result } else { [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" } }
+            if ($result -is [PSCustomObject]) {
+                return $result
+            } else {
+                return [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" }
+            }
         }
     }
     catch {
@@ -142,7 +152,8 @@ function Test-ModuleCooldown {
     if (-not $lastRun) { return $false }
     try {
         $diff = (Get-Date) - [DateTime]::Parse($lastRun)
-        $limit = if ($Mod.intervalHours) { $Mod.intervalHours } else { 24 }
+        $limit = 24
+        if ($Mod.intervalHours) { $limit = $Mod.intervalHours }
         return ($diff.TotalHours -lt $limit)
     } catch { return $false }
 }
