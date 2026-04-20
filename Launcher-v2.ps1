@@ -2,10 +2,10 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.3.2 - Modular Architecture (Disk-Temporary + Verbose Logging + Cache Smash).
+    v2.3.3 - Modular Architecture (Disk-Temporary + Verbose Logging + Telemetry Refresh).
 .NOTES
     Author: Rekordata Team
-    Version: 2.3.2
+    Version: 2.3.3
 #>
 
 #region 1. Configuration
@@ -118,22 +118,15 @@ function Invoke-RemoteModule {
         if ($ScriptUrl -notlike "http*") {
             $url = ("${ModuleBaseUrl}${ScriptUrl}").Trim()
         }
-        # Add aggressive cache-busting (nanoseconds ticks)
         $cacheBuster = [DateTime]::UtcNow.Ticks
         $urlWithCache = "$url?nocache=$cacheBuster"
-        
-        # Disk-based execution for robustness
         Invoke-WebRequest -Uri $urlWithCache -Headers $GlobalHeaders -OutFile $tempModPath -ErrorAction Stop
         
         if (Test-Path $tempModPath) {
             Write-Log "Executing ${Keyword} from disk (temp)..."
             $result = & $tempModPath $Context
-            
-            if ($result -is [PSCustomObject]) {
-                return $result
-            } else {
-                return [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" }
-            }
+            if ($result -is [PSCustomObject]) { return $result }
+            else { return [PSCustomObject]@{ Module=$Keyword; Success=$true; Status="Done" } }
         }
     }
     catch {
@@ -147,7 +140,13 @@ function Invoke-RemoteModule {
 
 function Test-ModuleCooldown {
     param($Mod)
-    if ($Mod.forceRun) { return $false }
+    # Debug logging for cooldown
+    $isForce = if($Mod.psobject.Properties['forceRun']) { $Mod.forceRun } else { $false }
+    if ($isForce -eq $true) { 
+        Write-Log "Module $($Mod.keyword) has forceRun enabled. Cooldown ignored."
+        return $false 
+    }
+    
     $path = "$RegistryPath\Modules\$($Mod.keyword)"
     $val = Get-RegistryValueSecure -Path $path -Name "LastRun"
     if ($null -eq $val -or -not $Mod.cooldownMinutes) { return $false }
@@ -166,7 +165,7 @@ function Update-ModuleRegistry {
 
 # region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.3.2 Starting (Disk + Verbose) ==="
+    Write-Log "=== Launcher v2.3.3 Starting (Debug Manifest) ==="
 
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
@@ -178,8 +177,10 @@ try {
     # Get manifest with cache busting
     $manifestUrl = ("${GitHubRepo}manifest.json").Trim() + "?nocache=$([DateTime]::UtcNow.Ticks)"
     $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers $GlobalHeaders -ErrorAction Stop
-    $results = @()
+    
+    Write-Log "Manifest Fetched. Version: $($manifest.version)"
 
+    $results = @()
     foreach ($mod in $manifest.modules) {
         if (-not $mod.enabled) {
             Write-Log "Module $($mod.keyword) is disabled. Skipping."
@@ -191,11 +192,7 @@ try {
         }
 
         $ctx = @{ AccessToken=$gcpToken; ProjectId=$projectId; RegistryPath=$RegistryPath; LogPath=$LogPath }
-        if ($mod.config) { 
-            foreach ($prop in $mod.config.psobject.Properties) { 
-                $ctx[$prop.Name] = $prop.Value 
-            } 
-        }
+        if ($mod.config) { foreach ($p in $mod.config.psobject.Properties) { $ctx[$p.Name] = $p.Value } }
 
         $res = Invoke-RemoteModule -Keyword $mod.keyword -ScriptUrl $mod.scriptUrl -Context $ctx
         $results += $res
@@ -210,7 +207,7 @@ try {
         }
         Send-Telemetry -AccessToken $gcpToken -ProjectId $projectId -Data $payload | Out-Null
     }
-    Write-Log "=== Launcher v2.3.2 Completed ==="
+    Write-Log "=== Launcher v2.3.3 Completed ==="
 }
 catch {
     Write-Log "Launcher Fatal: $_" "ERROR"
