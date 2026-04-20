@@ -7,7 +7,8 @@ $LogPath = $Context.LogPath
 $AccessToken = $Context.AccessToken
 $RegistryPath = $Context.RegistryPath
 $BitlockerFolderId = $Context.folderId
-$BitlockerUsedSpaceOnly = if ($null -ne $Context.usedSpaceOnly) { $Context.usedSpaceOnly } else { $true }
+$BitlockerUsedSpaceOnly = $true
+if ($null -ne $Context.usedSpaceOnly) { $BitlockerUsedSpaceOnly = $Context.usedSpaceOnly }
 
 if (-not $BitlockerFolderId) {
     # Se manca l'ID, non procediamo per sicurezza.
@@ -86,7 +87,9 @@ function Get-BitLockerMDMPolicy {
     if (-not (Test-Path $fvePath)) { return @{ PolicyPresent = $false } }
     $rawMethod = (Get-ItemProperty -Path $fvePath -ErrorAction SilentlyContinue).EncryptionMethodWithXtsOs
     $methodMap = @{ 3 = "aes128"; 4 = "aes256"; 6 = "xts_aes128"; 7 = "xts_aes256" }
-    return @{ PolicyPresent = $true; EncryptionMethod = if($methodMap.ContainsKey([int]$rawMethod)){ $methodMap[[int]$rawMethod] } else { "xts_aes256" } }
+    $encryptionMethod = "xts_aes256"
+    if($methodMap.ContainsKey([int]$rawMethod)){ $encryptionMethod = $methodMap[[int]$rawMethod] }
+    return @{ PolicyPresent = $true; EncryptionMethod = $encryptionMethod }
 }
 
 function Invoke-BitLockerActivation {
@@ -144,15 +147,24 @@ if ($activation.Success) {
     Write-ModuleLog "Activation step failed." "ERROR"
 }
 
+# Prepare return object
+$finalSuccess = [bool]$activation.Success
+$finalStatus = "Failed"
+if ($finalSuccess) { $finalStatus = "Completed" }
+
+$syncStatus = "none"
+if ($id -and $id -eq $lastSyncId) { $syncStatus = "already_synced" }
+elseif ($id) { $syncStatus = "uploaded" }
+
 # Return ResultObject to Launcher
 return [PSCustomObject]@{
     Module  = "bitlocker-escrow"
-    Success = if($activation.Success){ $true } else { $false }
-    Status  = if($activation.Success){ "Completed" } else { "Failed" }
+    Success = $finalSuccess
+    Status  = $finalStatus
     Details = @{
         activationStatus = $activation.StatusNote
         policyPresent    = $mdmPolicy.PolicyPresent
-        synced           = if($id -and $id -eq $lastSyncId){ "already_synced" } elseif ($id) { "uploaded" } else { "none" }
+        synced           = $syncStatus
     }
 }
 #endregion
