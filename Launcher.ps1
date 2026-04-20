@@ -2,7 +2,7 @@
 .SYNOPSIS
     Rekordata Windows Governance Launcher
 .DESCRIPTION
-    v2.2.2 - Modular Architecture (PS 5.1 Native Compatibility).
+    v2.2.3 - Modular Architecture (DEBUG AUTH 5.1).
     This script is the central orchestrator (Plumbing) for Windows Governance.
     - Executed in-memory by the Bootstrap-Agent.
     - Handles JWT Exchange for Google Cloud.
@@ -10,7 +10,7 @@
     - Fetches and executes operational modules (manifest-driven).
 .NOTES
     Author: Rekordata Team
-    Version: 2.2.2
+    Version: 2.2.3
 #>
 
 #region 1. Configuration
@@ -92,12 +92,16 @@ function New-GcpAccessToken {
     }
     catch {
         $errorMessage = $_.ToString()
-        if ($_.Exception.Response) {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $details = $reader.ReadToEnd()
-            $errorMessage += " | Details: $details"
-        }
-        Write-Log "GCP Token Exchange Failed: $errorMessage" "ERROR"
+        $bodyError = ""
+        try {
+            if ($_.Exception.Response) {
+                $stream = $_.Exception.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($stream)
+                $bodyError = $reader.ReadToEnd()
+            }
+        } catch { $bodyError = "Could not read error body: $_" }
+        
+        Write-Log "GCP Token Exchange Failed: $errorMessage | Body: $bodyError" "ERROR"
         return $null 
     }
 }
@@ -177,7 +181,8 @@ function Update-ModuleRegistry {
 
 #region 4. Main Orchestration
 try {
-    Write-Log "=== Launcher v2.2.2 Starting ==="
+    Write-Log "DEBUG: ENGINE v2.2.3 LOADING"
+    Write-Log "=== Launcher v2.2.3 Starting ==="
     
     $b64Token = Get-RegistryValueSecure -Path $RegistryPath -Name $MDMAuthValue
     if (-not $b64Token) { throw "Auth missing." }
