@@ -2,11 +2,32 @@
 # Provides BitLocker activation and Cloud Escrow (Firestore)
 # Requirement: Launcher context (AccessToken, ProjectId)
 
+<#
+.SYNOPSIS
+    Rekordata Windows Governance - BitLocker Module
+.DESCRIPTION
+    v2.2.6 - Activation & Cloud Escrow with verbose logging.
+.NOTES
+    Author: Rekordata Team
+    Version: 2.2.6
+#>
+
+param(
+    [hashtable]$Context
+)
+
+# 1. Configurazione Iniziale & Validazione
+$LogPath = $Context.LogPath
+$AccessToken = $Context.AccessToken
+$RegistryPath = $Context.RegistryPath
+$BitlockerFolderId = $Context.folderId
+$BitlockerUsedSpaceOnly = $true
+
 function Write-ModuleLog {
     param([string]$Message, [string]$Level = "INFO")
     $Stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $Line = "[$Stamp] [$Level] [Mod:BitLocker] $Message"
-    Add-Content -Path "C:\ProgramData\Rekordata\Logs\Governance.log" -Value $Line
+    if ($LogPath) { Add-Content -Path (Join-Path $LogPath "Governance.log") -Value $Line }
     Write-Host $Line
 }
 
@@ -53,9 +74,10 @@ function Invoke-BitLockerActivation {
     $success = $LASTEXITCODE -eq 0
     
     # Force a key backup to AD/Local if possible
-    manage-bde -protectors -adbackup C: -id (Get-BitLockerKey).ID | Out-Null
+    $key = Get-BitLockerKey
+    if ($key) { manage-bde -protectors -adbackup C: -id $key.ID | Out-Null }
     
-    return @{ Success = $success; Output = ($output -join "`n") }
+    return @{ Success = $success; Output = ($output -join "`n"); StatusNote = "attempted" }
 }
 
 function Send-Escrow {
@@ -84,6 +106,18 @@ function Send-Escrow {
     }
 }
 
+function Get-BitLockerMDMPolicy {
+    $fvePath = "HKLM:\SOFTWARE\Policies\Microsoft\FVE"
+    $result = @{ PolicyPresent = $false; EncryptionMethod = "xts_aes256" }
+    if (Test-Path $fvePath) {
+        $result.PolicyPresent = $true
+        $methodMap = @{ 3 = "aes128"; 4 = "aes256"; 6 = "xts_aes128"; 7 = "xts_aes256" }
+        $raw = (Get-ItemProperty -Path $fvePath -ErrorAction SilentlyContinue).EncryptionMethodWithXtsOs
+        if ($raw -and $methodMap.ContainsKey([int]$raw)) { $result.EncryptionMethod = $methodMap[[int]$raw] }
+    }
+    return $result
+}
+
 # --- Main Execution ---
 Write-ModuleLog "Checking BitLocker Governance..."
 
@@ -92,19 +126,25 @@ Write-ModuleLog "Volume C: Status is '$status'."
 
 # If not protected, activate
 if ($status -ne "FullyEncrypted" -and $status -ne "EncryptionInProgress") {
-    $activation = Invoke-BitLockerActivation
-    if (-not $activation.Success) {
-        Write-ModuleLog "Activation step failed. Detail: $($activation.Output)" "ERROR"
+    $mdmPolicy = Get-BitLockerMDMPolicy
+    if ($mdmPolicy.PolicyPresent) {
+        $activation = Invoke-BitLockerActivation -EncryptionMethod $mdmPolicy.EncryptionMethod
+        if (-not $activation.Success) {
+            Write-ModuleLog "Activation step failed. Detail: $($activation.Output)" "ERROR"
+        }
+    } else {
+        Write-ModuleLog "No MDM Policy for BitLocker. Skipping activation."
+        $activation = @{ Success = $true; StatusNote = "skipped_policy" }
     }
+} else {
+    $activation = @{ Success = $true; StatusNote = "already_active" }
 }
 
 # Always ensure escrow is up to date if we have a key
 $key = Get-BitLockerKey
 if ($null -ne $key) {
-    # In a real environment, we'd check if checksum matches cloud, 
-    # for now we send it to ensure safety.
-    if ($context.AccessToken -and $context.ProjectId) {
-        Send-Escrow -AccessToken $context.AccessToken -ProjectId $context.ProjectId -KeyId $key.ID -Password $key.Password
+    if ($AccessToken -and $Context.ProjectId) {
+        Send-Escrow -AccessToken $AccessToken -ProjectId $Context.ProjectId -KeyId $key.ID -Password $key.Password
     }
     else {
         Write-ModuleLog "Skipping cloud escrow: Missing context." "WARNING"
