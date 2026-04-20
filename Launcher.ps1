@@ -3,6 +3,11 @@
     Rekordata Windows Governance Launcher
 .DESCRIPTION
     v2.2.6 - Modular Architecture (Core-Ops Alignment Fix).
+    This script is the central orchestrator (Plumbing) for Windows Governance.
+    - Executed in-memory by the Bootstrap-Agent.
+    - Handles JWT Exchange for Google Cloud.
+    - Manages shared Telemetry (Firestore).
+    - Fetches and executes operational modules (manifest-driven).
 .NOTES
     Author: Rekordata Team
     Version: 2.2.6
@@ -148,7 +153,7 @@ try {
     foreach ($mod in $manifest.modules) {
         if ($mod.enabled) {
             Write-Log "Fetching module '$($mod.name)'..."
-            $modContent = Invoke-RestMethod -Uri "$GitHubRepo$($mod.path)?nocache=$(Get-Date -UFormat %s)"
+            $modContent = Invoke-RestMethod -Uri "$GitHubRepo$($mod.name)?nocache=$(Get-Date -UFormat %s)"
             Write-Log "Executing $($mod.name) in-memory..."
             
             # Pass common context (Token, ProjectId)
