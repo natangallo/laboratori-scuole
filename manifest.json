@@ -1,20 +1,12 @@
 {
-  "version": "2.3.0",
-  "generatedAt": "2026-04-20",
-  "launcher": {
-    "scriptUrl": "Launcher.ps1",
-    "cooldownMinutes": 10
-  },
+  "version": "2.3.2",
   "modules": [
     {
       "keyword": "bitlocker-escrow",
-      "scriptUrl": "modules/Escrow-Bitlocker.ps1",
       "enabled": true,
-      "cooldownMinutes": 60,
-      "config": {
-        "BitlockerFolderId": "1sNEWJvrziCfwA-VFSUrSZj-0NaCX7t0A",
-        "usedSpaceOnly": true
-      }
+      "scriptUrl": "modules/Escrow-Bitlocker.ps1",
+      "cooldownMinutes": 1440,
+      "forceRun": true
     }
   ]
 }
